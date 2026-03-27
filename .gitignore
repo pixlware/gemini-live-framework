@@ -68,3 +68,6 @@ htmlcov/
 # Recordings
 .recordings/
 recordings/
+
+# Telemetry metrics
+metrics/

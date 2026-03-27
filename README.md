@@ -13,6 +13,8 @@ Python framework for building **real-time voice AI applications** on Google's [G
 - **Session metrics** — Turn counts, interruptions, word counts, and token usage via `MetricTracker`
 - **Call recording** — Wall-clock–aligned mixed mono WAV/MP3 output via `AudioRecorder`
 - **Idle timers** — Multi-trigger async callbacks with pause/resume semantics via `Timer`
+- **Logging** — Colored (TTY) / plain (non-TTY) log formatter with `DISABLED` mode, via `setup_logging()`
+- **Telemetry** — Optional [`gemini-live-telemetry`](https://pypi.org/project/gemini-live-telemetry/) integration for automatic metric collection (tokens, latency, turns, tools, audio), local JSON export, and Cloud Monitoring with an auto-created dashboard
 
 ## Architecture
 
@@ -91,14 +93,15 @@ All settings are loaded from environment variables (and optional `.env`) via [Py
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `APP_NAME` | Service name returned in API responses | `Gemini Live Framework` |
+| `GOOGLE_CLOUD_PROJECT` | GCP project ID for Vertex AI | *(required)* |
+| `GOOGLE_CLOUD_LOCATION` | GCP region (reserved for future use) | *(empty)* |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Path to service account JSON | *(unset — falls back to ADC)* |
 | `DEBUG_MODE` | Enables Uvicorn auto-reload | `false` |
 | `LOG_LEVEL` | Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
 | `BACKEND_HOST` | Server bind host | `0.0.0.0` |
 | `BACKEND_PORT` | Server bind port | `8000` |
 | `BACKEND_URL` | Public base URL (used for logging and callbacks) | `http://localhost:8000` |
-| `GOOGLE_CLOUD_PROJECT` | GCP project ID for Vertex AI | *(required)* |
-| `GOOGLE_CLOUD_LOCATION` | GCP region (reserved for future use) | *(empty)* |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Path to service account JSON | *(unset — falls back to ADC)* |
+| `TELEMETRY_MODE` | Telemetry mode: `disabled`, `local` (JSON to `./metrics/`), or `cloud` (Cloud Monitoring + dashboard + JSON) | `disabled` |
 
 `GeminiLiveSession` connects to the `us-central1` region by default. Change the region in `framework/gemini_live_session.py` if needed.
 
@@ -137,6 +140,27 @@ Built-in features: deduplication (by tool call ID and content hash), cancellatio
 - **`Transcription`** (`framework/transcription.py`) — Maintains a merged or streaming conversation history as `TranscriptEntry` records with timestamps and interruption flags.
 - **`ModelVoiceActivityDetector`** (`framework/model_voice_activity_detector.py`) — Synthesizes model-side voice activity start/stop events from audio chunk timing and expected playback duration.
 - **`Timer`** (`framework/timer.py`) — Async timer with sorted trigger points, pause/resume semantics, and configurable max cycles. Used for idle detection and nudge flows.
+
+### Logging & Telemetry
+
+**`setup_logging()`** (`framework/logger.py`) configures the root Python logger with colored output on TTY and plain output in non-TTY environments. Supports `DISABLED` mode to silence all logs. Call once at app startup before other imports.
+
+**`setup_telemetry()`** (`framework/logger.py`) activates [`gemini-live-telemetry`](https://pypi.org/project/gemini-live-telemetry/) based on the `TELEMETRY_MODE` env var:
+
+| Mode | Behavior |
+|------|----------|
+| `disabled` | No telemetry (default). No import cost. |
+| `local` | JSON metrics written to `./metrics/`. No GCP export. |
+| `cloud` | Full Cloud Monitoring export, auto-created dashboard, and local JSON. |
+
+The telemetry package instruments the `google-genai` SDK transparently — a single `activate()` call at startup collects metrics for tokens, latency (TTFB), turns, tool calls, audio, and VAD across all Gemini Live sessions.
+
+```python
+from framework.logger import setup_logging, setup_telemetry
+
+setup_logging(level="INFO")
+setup_telemetry()
+```
 
 ### Data Models
 
