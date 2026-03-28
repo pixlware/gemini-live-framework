@@ -173,7 +173,7 @@ All shared DTOs live in `framework/models.py`: `AudioData`, `TextData`, `Transcr
 Subclass `BaseTransport` and implement three required methods:
 
 ```python
-from framework.transports import BaseTransport
+from framework.transports.base_transport import BaseTransport
 from framework.models import AudioData, Data
 
 class MyTransport(BaseTransport):
@@ -198,7 +198,7 @@ Optionally override `send_text`, `send_transcript`, `send_voice_activity`, and `
 To apply audio filtering (e.g., denoising), pass an `AudioInputFilter` subclass to the transport:
 
 ```python
-from framework.transports import AudioInputFilter
+from framework.transports.audio_input_filter import AudioInputFilter
 
 class MyFilter(AudioInputFilter):
     async def filter(self, data: bytes) -> bytes:

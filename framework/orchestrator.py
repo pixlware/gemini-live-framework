@@ -15,14 +15,14 @@ from .models import (
     VoiceActivityData,
     TurnCompleteData,
 )
-from .audio_recorder import AudioRecorder
-from .metric_tracker import MetricTracker
-from .model_voice_activity_detector import ModelVoiceActivityDetector
-from .timer import Timer
-from .transcription import Transcription
-from .transports import BaseTransport
+from .transports.base_transport import BaseTransport
 from .gemini_live_session import GeminiLiveSession, GeminiLiveResponseType
 from .base_tool_handler import BaseToolHandler, ToolResponseAction
+from .transcription import Transcription
+from .metric_tracker import MetricTracker
+from .timer import Timer
+from .audio_recorder import AudioRecorder
+from .model_voice_activity_detector import ModelVoiceActivityDetector
 
 logger = logging.getLogger(__name__)
 
