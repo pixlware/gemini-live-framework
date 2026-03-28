@@ -91,7 +91,8 @@ class AudioRecorder:
     def stop(self) -> Optional[str]:
         """Finalize the recording and write to disk.
 
-        Returns the file path on success, or ``None`` if nothing was recorded.
+        Returns the file path on success, or ``None`` if nothing was recorded
+        or an error occurred.
         """
         if not self._is_recording:
             return None
@@ -103,30 +104,34 @@ class AudioRecorder:
             logger.warning("[AudioRecorder] No audio captured — skipping write")
             return None
 
-        max_len = max(len(self._user_track), len(self._model_track))
-        max_len += max_len % BYTES_PER_SAMPLE  # align to sample boundary
-        self._user_track.extend(b"\x00" * (max_len - len(self._user_track)))
-        self._model_track.extend(b"\x00" * (max_len - len(self._model_track)))
+        try:
+            max_len = max(len(self._user_track), len(self._model_track))
+            max_len += max_len % BYTES_PER_SAMPLE  # align to sample boundary
+            self._user_track.extend(b"\x00" * (max_len - len(self._user_track)))
+            self._model_track.extend(b"\x00" * (max_len - len(self._model_track)))
 
-        mono = self._mix_mono(
-            bytes(self._user_track), bytes(self._model_track)
-        )
+            mono = self._mix_mono(
+                bytes(self._user_track), bytes(self._model_track)
+            )
 
-        duration_sec = max_len / (OUTPUT_SAMPLE_RATE * BYTES_PER_SAMPLE)
-        filepath = self._save_recording(mono)
+            duration_sec = max_len / (OUTPUT_SAMPLE_RATE * BYTES_PER_SAMPLE)
+            filepath = self._save_recording(mono)
 
-        logger.info(
-            "[AudioRecorder] File saved at path=%s, start=%s, end=%s, duration=%.1fs",
-            filepath,
-            self._start_wall.isoformat() if self._start_wall else "?",
-            self._end_wall.isoformat() if self._end_wall else "?",
-            duration_sec,
-        )
+            logger.info(
+                "[AudioRecorder] Recording saved: path=%s, start=%s, end=%s, duration=%.1fs",
+                filepath,
+                self._start_wall.isoformat() if self._start_wall else "?",
+                self._end_wall.isoformat() if self._end_wall else "?",
+                duration_sec,
+            )
 
-        self._user_track = bytearray()
-        self._model_track = bytearray()
-
-        return filepath
+            return filepath
+        except Exception as exc:
+            logger.error("[AudioRecorder] Failed to save recording: %s", exc, exc_info=True)
+            return None
+        finally:
+            self._user_track = bytearray()
+            self._model_track = bytearray()
 
     # --- Storage -------------------------------------------------------
 

@@ -12,7 +12,7 @@ Python framework for building **real-time voice AI applications** on Google's [G
 - **Transcription** — Merged or streaming conversation history with `Transcription`
 - **Idle timers** — Multi-trigger async callbacks with pause/resume semantics via `Timer`
 - **Session metrics** — Turn counts, interruptions, word counts, and token usage via `MetricTracker`
-- **Audio preprocessing** — Optional consumer-provided preprocessor for incoming audio (noise filtering, gain adjustment, etc.) with automatic PCM16 16 kHz format validation
+- **Audio input filtering** — Optional `AudioInputFilter` on any transport for signal processing (denoising, gating, etc.) with automatic exception safety and graceful disabling
 - **Call recording** — Wall-clock–aligned mixed mono WAV/MP3 output via `AudioRecorder`
 - **Logging** — Colored (TTY) / plain (non-TTY) log formatter with `DISABLED` mode, via `setup_logging()`
 - **Telemetry** — Optional [`gemini-live-telemetry`](https://pypi.org/project/gemini-live-telemetry/) integration for automatic metric collection (tokens, latency, turns, tools, audio), local JSON export, and Cloud Monitoring with an auto-created dashboard
@@ -21,7 +21,7 @@ Python framework for building **real-time voice AI applications** on Google's [G
 
 The `Orchestrator` runs three cooperating async pipelines:
 
-1. **Transport → Gemini** — Incoming `AudioData` / `TextData` from the client is forwarded to `GeminiLiveSession`. Audio passes through an optional preprocessor (with format validation) before sending.
+1. **Transport → Gemini** — Incoming `AudioData` / `TextData` from the client is forwarded to `GeminiLiveSession`.
 2. **Gemini → Transport** — Model responses (audio, text, transcripts, voice activity, interruptions, turn completions) are sent back through the transport to the client.
 3. **Tool Handler → Gemini** — When a `BaseToolHandler` is registered, tool execution results flow from its queue back to Gemini as function responses or injected context.
 
@@ -112,11 +112,11 @@ All settings are loaded from environment variables (and optional `.env`) via [Py
 
 **`GeminiLiveSession`** (`framework/gemini_live_session.py`) manages the Gemini Live API WebSocket — connection lifecycle, sending/receiving audio and text, tool responses, VAD configuration, RAG corpus, and transcription settings. It supports configurable voice, language, and initial text prompts.
 
-**`Orchestrator`** (`framework/orchestrator.py`) wires a transport, session, and optional tool handler into the three concurrent pipelines described in [Architecture](#architecture). It accepts **`OrchestratorCallbacks`** for application-level hooks (`on_event`, `on_turn_complete`, `on_interrupted`, `on_voice_activity`), an optional `audio_preprocessor` for transforming inbound audio before it reaches Gemini, and an optional `Transcription` instance for conversation history.
+**`Orchestrator`** (`framework/orchestrator.py`) wires a transport, session, and optional tool handler into the three concurrent pipelines described in [Architecture](#architecture). It accepts **`OrchestratorCallbacks`** for application-level hooks (`on_event`, `on_turn_complete`, `on_interrupted`, `on_voice_activity`) and an optional `Transcription` instance for conversation history.
 
 ### Transports
 
-**`BaseTransport`** (`framework/transports/base_transport.py`) defines the abstract interface for client communication. It auto-creates audio transcoders so the framework always works with **PCM16 16 kHz** inbound and **PCM16 24 kHz** outbound, regardless of your client's wire format.
+**`BaseTransport`** (`framework/transports/base_transport.py`) defines the abstract interface for client communication. It auto-creates audio transcoders so the framework always works with **PCM16 16 kHz** inbound and **PCM16 24 kHz** outbound, regardless of your client's wire format. An optional **`AudioInputFilter`** can be attached to any transport to apply signal processing (e.g., denoising) on incoming audio before it reaches the orchestrator.
 
 Two built-in implementations:
 
@@ -133,6 +133,7 @@ Built-in features: deduplication (by tool call ID and content hash), cancellatio
 
 - **`AudioTranscoder`** (`framework/audio_transcoder.py`) — `PcmResampler`, `MulawDecoder`, `MulawEncoder` for format and sample rate conversion.
 - **`BufferService`** (`framework/buffer_service.py`) — Accumulates audio into fixed-size chunks before forwarding.
+- **`AudioInputFilter`** (`framework/transports/audio_input_filter.py`) — Abstract base for transport-level audio input filters. Subclass and implement `filter(data: bytes) -> Optional[bytes]` for signal processing (denoising, gating, etc.). The base `process()` wrapper provides exception safety and gracefully disables misbehaving filters.
 - **`AudioRecorder`** (`framework/audio_recorder.py`) — Records user and model audio into a wall-clock–aligned mixed mono file (WAV or MP3). Both tracks are resampled to 24 kHz, silence-padded for alignment, and mixed down.
 
 ### Observability
@@ -193,6 +194,18 @@ class MyTransport(BaseTransport):
 Set `input_audio_format`, `input_audio_sample_rate`, and `input_audio_chunk_size` (and their `output_` counterparts) to match your client's wire format. The base class creates transcoders automatically.
 
 Optionally override `send_text`, `send_transcript`, `send_voice_activity`, and `send_event` if your protocol supports them.
+
+To apply audio filtering (e.g., denoising), pass an `AudioInputFilter` subclass to the transport:
+
+```python
+from framework.transports import AudioInputFilter
+
+class MyFilter(AudioInputFilter):
+    async def filter(self, data: bytes) -> bytes:
+        return my_denoise(data)
+
+transport = MyTransport(audio_input_filter=MyFilter())
+```
 
 ## Building a Tool Handler
 

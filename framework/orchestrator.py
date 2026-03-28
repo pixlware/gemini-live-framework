@@ -9,7 +9,6 @@ from google.genai import types
 
 from .models import (
     AudioData,
-    AudioFormat,
     TextData,
     EventData,
     Role,
@@ -56,7 +55,6 @@ class Orchestrator:
         callbacks: Optional[OrchestratorCallbacks] = None,
         user_idle_timer: Optional[Timer] = None,
         model_idle_timer: Optional[Timer] = None,
-        audio_preprocessor: Optional[Callable[[AudioData], Awaitable[Optional[AudioData]]]] = None,
     ):
         self.transport = transport
         self.gemini_session = gemini_session
@@ -66,9 +64,6 @@ class Orchestrator:
         self.callbacks = callbacks or OrchestratorCallbacks()
         self._user_idle_timer = user_idle_timer
         self._model_idle_timer = model_idle_timer
-        self._audio_preprocessor = audio_preprocessor
-        self._preprocessor_validated = False
-        self._preprocessor_disabled = False
         self.metric_tracker = MetricTracker()
         self._model_vad = ModelVoiceActivityDetector(
             on_event=self._on_model_voice_activity,
@@ -115,7 +110,7 @@ class Orchestrator:
             await self.tool_handler.cleanup()
         await self.gemini_session.disconnect()
         if self.audio_recorder:
-            asyncio.get_running_loop().run_in_executor(None, self._save_recording)
+            asyncio.get_running_loop().run_in_executor(None, self.audio_recorder.stop)
 
     async def _handle_transport_messages(self):
         """Pipeline: transport -> Gemini."""
@@ -125,9 +120,7 @@ class Orchestrator:
                     self.metric_tracker.on_audio_sent()
                     if self.audio_recorder:
                         self.audio_recorder.record_user_audio(audio.data, audio.sample_rate)
-                    audio = await self._preprocess_audio(audio)
-                    if audio is not None:
-                        await self.gemini_session.send_audio(audio.data)
+                    await self.gemini_session.send_audio(audio.data)
                 case TextData() as text:
                     await self.gemini_session.send_text(text.text)
                 case EventData() as event:
@@ -285,45 +278,3 @@ class Orchestrator:
                 self._user_idle_timer.start()
         if self.callbacks.on_voice_activity:
             await self.callbacks.on_voice_activity(data)
-
-    async def _preprocess_audio(self, audio: AudioData) -> Optional[AudioData]:
-        """Run consumer-provided audio preprocessor with format validation."""
-        if not self._audio_preprocessor or self._preprocessor_disabled:
-            return audio
-
-        try:
-            processed = await self._audio_preprocessor(audio)
-        except Exception as e:
-            logger.warning(
-                "[Orchestrator] Audio preprocessor raised %s: %s. "
-                "Disabling preprocessor for this session.",
-                type(e).__name__, e,
-            )
-            self._preprocessor_disabled = True
-            return audio
-
-        if processed is None:
-            return None
-
-        if not self._preprocessor_validated:
-            if processed.sample_rate != 16000 or processed.format != AudioFormat.PCM16:
-                logger.warning(
-                    "[Orchestrator] Audio preprocessor returned invalid format "
-                    "(expected PCM16 @ 16kHz, got %s @ %dHz). "
-                    "Disabling preprocessor for this session.",
-                    processed.format.value, processed.sample_rate,
-                )
-                self._preprocessor_disabled = True
-                return audio
-            self._preprocessor_validated = True
-
-        return processed
-
-    def _save_recording(self) -> None:
-        """Synchronous helper — runs in a thread via run_in_executor."""
-        try:
-            filepath = self.audio_recorder.stop()
-            if filepath:
-                logger.info("[Orchestrator] Recording saved: %s", filepath)
-        except Exception as exc:
-            logger.error("[Orchestrator] Failed to save recording: %s", exc, exc_info=True)
