@@ -46,8 +46,11 @@ class FastapiTransport(BaseTransport):
             if "bytes" in message and message["bytes"]:
                 transcoded = self.transcode_input(message["bytes"])
                 for chunk in self._input_audio_buffer.get_chunks(transcoded):
+                    filtered = chunk
+                    if self.input_audio_filter:
+                        filtered = await self.input_audio_filter.process(chunk)
                     yield AudioData(
-                        data=chunk,
+                        data=filtered,
                         format=self.FRAMEWORK_INPUT_FORMAT,
                         sample_rate=self.FRAMEWORK_INPUT_SAMPLE_RATE,
                     )

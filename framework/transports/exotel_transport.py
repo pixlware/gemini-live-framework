@@ -81,8 +81,11 @@ class ExotelTransport(BaseTransport):
                     audio_bytes = base64.b64decode(payload)
                     transcoded = self.transcode_input(audio_bytes)
                     for chunk in self._input_audio_buffer.get_chunks(transcoded):
+                        filtered = chunk
+                        if self.input_audio_filter:
+                            filtered = await self.input_audio_filter.process(chunk)
                         yield AudioData(
-                            data=chunk,
+                            data=filtered,
                             format=self.FRAMEWORK_INPUT_FORMAT,
                             sample_rate=self.FRAMEWORK_INPUT_SAMPLE_RATE,
                         )
