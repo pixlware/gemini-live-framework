@@ -7,6 +7,7 @@ from fastapi import WebSocket
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 from starlette.websockets import WebSocketState
 
+from .audio_input_filter import AudioInputFilter
 from ..audio_transcoder import AudioTranscoder, build_transcoder
 from ..buffer_service import BufferService
 from ..models import AudioFormat, AudioData, TextData, TranscriptData, EventData, VoiceActivityData, Data
@@ -34,6 +35,7 @@ class BaseTransport(BaseModel, ABC):
     input_audio_format: AudioFormat = AudioFormat.PCM16
     input_audio_sample_rate: int = 16000
     input_audio_chunk_size: int = 960
+    input_audio_filter: Optional[AudioInputFilter] = None
 
     output_audio_format: AudioFormat = AudioFormat.PCM16
     output_audio_sample_rate: int = 24000

@@ -8,8 +8,9 @@ from typing import Optional, AsyncIterator
 from fastapi import WebSocket
 from starlette.websockets import WebSocketState, WebSocketDisconnect
 
-from ..models import AudioFormat, AudioData, EventData, Data
 from .base_transport import BaseTransport
+from .audio_input_filter import AudioInputFilter
+from ..models import AudioFormat, AudioData, EventData, Data
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class ExotelTransport(BaseTransport):
         input_audio_format: AudioFormat = AudioFormat.PCM16,
         input_audio_sample_rate: int = 16000,
         input_audio_chunk_size: int = 960,
+        input_audio_filter: Optional[AudioInputFilter] = None,
         output_audio_format: AudioFormat = AudioFormat.PCM16,
         output_audio_sample_rate: int = 16000,
         output_audio_chunk_size: int = 960,
@@ -47,6 +49,7 @@ class ExotelTransport(BaseTransport):
             input_audio_format=input_audio_format,
             input_audio_sample_rate=input_audio_sample_rate,
             input_audio_chunk_size=input_audio_chunk_size,
+            input_audio_filter=input_audio_filter,
             output_audio_format=output_audio_format,
             output_audio_sample_rate=output_audio_sample_rate,
             output_audio_chunk_size=output_audio_chunk_size,

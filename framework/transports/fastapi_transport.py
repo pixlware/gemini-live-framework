@@ -1,10 +1,11 @@
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 from fastapi import WebSocket
 from starlette.websockets import WebSocketState
 
-from ..models import AudioFormat, AudioData, TextData, TranscriptData, VoiceActivityData, Data
 from .base_transport import BaseTransport
+from .audio_input_filter import AudioInputFilter
+from ..models import AudioFormat, AudioData, TextData, TranscriptData, VoiceActivityData, Data
 
 
 class FastapiTransport(BaseTransport):
@@ -16,6 +17,7 @@ class FastapiTransport(BaseTransport):
         input_audio_format: AudioFormat = AudioFormat.PCM16,
         input_audio_sample_rate: int = 16000,
         input_audio_chunk_size: int = 960,
+        input_audio_filter: Optional[AudioInputFilter] = None,
         output_audio_format: AudioFormat = AudioFormat.PCM16,
         output_audio_sample_rate: int = 24000,
         output_audio_chunk_size: int = 960,
@@ -25,6 +27,7 @@ class FastapiTransport(BaseTransport):
             input_audio_format=input_audio_format,
             input_audio_sample_rate=input_audio_sample_rate,
             input_audio_chunk_size=input_audio_chunk_size,
+            input_audio_filter=input_audio_filter,
             output_audio_format=output_audio_format,
             output_audio_sample_rate=output_audio_sample_rate,
             output_audio_chunk_size=output_audio_chunk_size,
