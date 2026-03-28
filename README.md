@@ -10,9 +10,10 @@ Python framework for building **real-time voice AI applications** on Google's [G
 - **Tool calling** — Blocking and non-blocking execution via `BaseToolHandler` and `@tool` decorator, with built-in deduplication, cancellation, and queued results
 - **Voice activity detection** — User VAD events from Gemini; synthesized model start/stop events via `ModelVoiceActivityDetector`
 - **Transcription** — Merged or streaming conversation history with `Transcription`
-- **Session metrics** — Turn counts, interruptions, word counts, and token usage via `MetricTracker`
-- **Call recording** — Wall-clock–aligned mixed mono WAV/MP3 output via `AudioRecorder`
 - **Idle timers** — Multi-trigger async callbacks with pause/resume semantics via `Timer`
+- **Session metrics** — Turn counts, interruptions, word counts, and token usage via `MetricTracker`
+- **Audio preprocessing** — Optional consumer-provided preprocessor for incoming audio (noise filtering, gain adjustment, etc.) with automatic PCM16 16 kHz format validation
+- **Call recording** — Wall-clock–aligned mixed mono WAV/MP3 output via `AudioRecorder`
 - **Logging** — Colored (TTY) / plain (non-TTY) log formatter with `DISABLED` mode, via `setup_logging()`
 - **Telemetry** — Optional [`gemini-live-telemetry`](https://pypi.org/project/gemini-live-telemetry/) integration for automatic metric collection (tokens, latency, turns, tools, audio), local JSON export, and Cloud Monitoring with an auto-created dashboard
 
@@ -20,7 +21,7 @@ Python framework for building **real-time voice AI applications** on Google's [G
 
 The `Orchestrator` runs three cooperating async pipelines:
 
-1. **Transport → Gemini** — Incoming `AudioData` / `TextData` from the client is forwarded to `GeminiLiveSession`.
+1. **Transport → Gemini** — Incoming `AudioData` / `TextData` from the client is forwarded to `GeminiLiveSession`. Audio passes through an optional preprocessor (with format validation) before sending.
 2. **Gemini → Transport** — Model responses (audio, text, transcripts, voice activity, interruptions, turn completions) are sent back through the transport to the client.
 3. **Tool Handler → Gemini** — When a `BaseToolHandler` is registered, tool execution results flow from its queue back to Gemini as function responses or injected context.
 
@@ -111,7 +112,7 @@ All settings are loaded from environment variables (and optional `.env`) via [Py
 
 **`GeminiLiveSession`** (`framework/gemini_live_session.py`) manages the Gemini Live API WebSocket — connection lifecycle, sending/receiving audio and text, tool responses, VAD configuration, RAG corpus, and transcription settings. It supports configurable voice, language, and initial text prompts.
 
-**`Orchestrator`** (`framework/orchestrator.py`) wires a transport, session, and optional tool handler into the three concurrent pipelines described in [Architecture](#architecture). It accepts **`OrchestratorCallbacks`** for application-level hooks: `on_event`, `on_turn_complete`, `on_interrupted`, `on_voice_activity`, and `on_transcript`.
+**`Orchestrator`** (`framework/orchestrator.py`) wires a transport, session, and optional tool handler into the three concurrent pipelines described in [Architecture](#architecture). It accepts **`OrchestratorCallbacks`** for application-level hooks (`on_event`, `on_turn_complete`, `on_interrupted`, `on_voice_activity`), an optional `audio_preprocessor` for transforming inbound audio before it reaches Gemini, and an optional `Transcription` instance for conversation history.
 
 ### Transports
 
@@ -137,7 +138,7 @@ Built-in features: deduplication (by tool call ID and content hash), cancellatio
 ### Observability
 
 - **`MetricTracker`** (`framework/metric_tracker.py`) — Session-level counters: audio packets, user/model turns, interruptions, tool calls, word counts, and aggregated Gemini token usage. Call `to_dict()` for a snapshot.
-- **`Transcription`** (`framework/transcription.py`) — Maintains a merged or streaming conversation history as `TranscriptEntry` records with timestamps and interruption flags.
+- **`Transcription`** (`framework/transcription.py`) — Maintains a merged or streaming conversation history as `TranscriptEntry` records with timestamps and interruption flags. Accepts an `on_transcript` callback and a `TranscriptMode` (`MERGED` fires the callback once per finalized model turn; `STREAMING` fires on every chunk).
 - **`ModelVoiceActivityDetector`** (`framework/model_voice_activity_detector.py`) — Synthesizes model-side voice activity start/stop events from audio chunk timing and expected playback duration.
 - **`Timer`** (`framework/timer.py`) — Async timer with sorted trigger points, pause/resume semantics, and configurable max cycles. Used for idle detection and nudge flows.
 

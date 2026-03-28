@@ -9,8 +9,8 @@ from google.genai import types
 
 from .models import (
     AudioData,
+    AudioFormat,
     TextData,
-    TranscriptData,
     EventData,
     Role,
     VoiceActivityData,
@@ -41,7 +41,6 @@ class OrchestratorCallbacks:
     ] = None
     on_interrupted: Optional[Callable[[], Awaitable[None]]] = None
     on_voice_activity: Optional[Callable[[VoiceActivityData], Awaitable[None]]] = None
-    on_transcript: Optional[Callable[[TranscriptData], Awaitable[None]]] = None
 
 
 class Orchestrator:
@@ -57,6 +56,7 @@ class Orchestrator:
         callbacks: Optional[OrchestratorCallbacks] = None,
         user_idle_timer: Optional[Timer] = None,
         model_idle_timer: Optional[Timer] = None,
+        audio_preprocessor: Optional[Callable[[AudioData], Awaitable[Optional[AudioData]]]] = None,
     ):
         self.transport = transport
         self.gemini_session = gemini_session
@@ -66,6 +66,9 @@ class Orchestrator:
         self.callbacks = callbacks or OrchestratorCallbacks()
         self._user_idle_timer = user_idle_timer
         self._model_idle_timer = model_idle_timer
+        self._audio_preprocessor = audio_preprocessor
+        self._preprocessor_validated = False
+        self._preprocessor_disabled = False
         self.metric_tracker = MetricTracker()
         self._model_vad = ModelVoiceActivityDetector(
             on_event=self._on_model_voice_activity,
@@ -123,7 +126,8 @@ class Orchestrator:
                     if self.audio_recorder:
                         self.audio_recorder.record_user_audio(audio.data, audio.sample_rate)
                     audio = await self._preprocess_audio(audio)
-                    await self.gemini_session.send_audio(audio.data)
+                    if audio is not None:
+                        await self.gemini_session.send_audio(audio.data)
                 case TextData() as text:
                     await self.gemini_session.send_text(text.text)
                 case EventData() as event:
@@ -158,8 +162,6 @@ class Orchestrator:
                             await self.transcription.on_user_transcript(response.data.text)
                         elif response.data.role == Role.MODEL:
                             await self.transcription.on_model_transcript(response.data.text)
-                    if self.callbacks.on_transcript:
-                        await self.callbacks.on_transcript(response.data)
                 case GeminiLiveResponseType.INTERRUPTED:
                     self.metric_tracker.on_interruption()
                     await self._model_vad.force_stop()
@@ -284,9 +286,38 @@ class Orchestrator:
         if self.callbacks.on_voice_activity:
             await self.callbacks.on_voice_activity(data)
 
-    async def _preprocess_audio(self, audio: AudioData) -> AudioData:
-        """Preprocess audio data before sending to Gemini."""
-        return audio
+    async def _preprocess_audio(self, audio: AudioData) -> Optional[AudioData]:
+        """Run consumer-provided audio preprocessor with format validation."""
+        if not self._audio_preprocessor or self._preprocessor_disabled:
+            return audio
+
+        try:
+            processed = await self._audio_preprocessor(audio)
+        except Exception as e:
+            logger.warning(
+                "[Orchestrator] Audio preprocessor raised %s: %s. "
+                "Disabling preprocessor for this session.",
+                type(e).__name__, e,
+            )
+            self._preprocessor_disabled = True
+            return audio
+
+        if processed is None:
+            return None
+
+        if not self._preprocessor_validated:
+            if processed.sample_rate != 16000 or processed.format != AudioFormat.PCM16:
+                logger.warning(
+                    "[Orchestrator] Audio preprocessor returned invalid format "
+                    "(expected PCM16 @ 16kHz, got %s @ %dHz). "
+                    "Disabling preprocessor for this session.",
+                    processed.format.value, processed.sample_rate,
+                )
+                self._preprocessor_disabled = True
+                return audio
+            self._preprocessor_validated = True
+
+        return processed
 
     def _save_recording(self) -> None:
         """Synchronous helper — runs in a thread via run_in_executor."""
