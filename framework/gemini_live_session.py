@@ -30,6 +30,10 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
+GEMINI_MODELS = [
+    "gemini-live-2.5-flash-native-audio"
+]
+
 class GeminiLiveResponseType(Enum):
     AUDIO = "audio"
     TEXT = "text"
@@ -51,51 +55,28 @@ class GeminiLiveResponse:
 class GeminiLiveSession:
     """Manages a Gemini Live API session for real-time conversation."""
 
-    model: str = "gemini-live-2.5-flash-native-audio"
-    client: Optional[genai.Client] = None
-    session: Optional[AsyncSession] = None
-    session_context: Optional[AsyncContextManager[AsyncSession]] = None
-    is_connected: bool = False
-
-    system_instruction: Optional[str] = None
-    function_declarations: Optional[list[types.FunctionDeclaration]] = None
-    rag_corpus: Optional[str] = None
-
-    voice_name: str = "Zephyr"
-    language_code: Optional[str] = None
-
-    input_audio_transcription: Optional[types.AudioTranscriptionConfig] = None
-    output_audio_transcription: Optional[types.AudioTranscriptionConfig] = None
-
-    vad_enabled: bool = True
-
-    initial_text: Optional[str] = None
-
-    on_connect: Optional[Callable[[AsyncSession], Awaitable[None]]] = None
-
     def __init__(
         self,
-        voice_name: str = "Zephyr",
-        language_code: Optional[str] = None,
-        system_instruction: Optional[str] = None,
-        function_declarations: Optional[list[types.FunctionDeclaration]] = None,
-        rag_corpus: Optional[str] = None,
-        input_audio_transcription: Optional[types.AudioTranscriptionConfig] = None,
-        output_audio_transcription: Optional[types.AudioTranscriptionConfig] = None,
-        vad_enabled: Optional[bool] = True,
+        config: types.LiveConnectConfig,
+        *,
+        model: str = GEMINI_MODELS[0],
         initial_text: Optional[str] = None,
         on_connect: Optional[Callable[[AsyncSession], Awaitable[None]]] = None,
     ):
-        self.system_instruction = system_instruction
-        self.function_declarations = function_declarations
-        self.rag_corpus = rag_corpus
-        self.voice_name = voice_name
-        self.language_code = language_code
-        self.input_audio_transcription = input_audio_transcription
-        self.output_audio_transcription = output_audio_transcription
-        self.vad_enabled = vad_enabled
+        self.config = config
+
+        self.model = model
+        if model not in GEMINI_MODELS:
+            self.model = GEMINI_MODELS[0]
+            logger.warning(f"[GeminiLiveSession] Model {model} not supported, using {self.model} instead")
+
         self.initial_text = initial_text
         self.on_connect = on_connect
+
+        self.client: Optional[genai.Client] = None
+        self.session: Optional[AsyncSession] = None
+        self.session_context: Optional[AsyncContextManager[AsyncSession]] = None
+        self.is_connected: bool = False
 
     async def connect(self) -> bool:
         """Establish connection to Gemini Live API.  Returns True on success."""
@@ -108,54 +89,9 @@ class GeminiLiveSession:
 
             logger.info("[GeminiLiveSession] Connecting")
 
-            system_instruction = self._get_system_instruction()
-            tools_config = self._get_tool_config()
-            vad_config = types.AutomaticActivityDetection(
-                disabled=True
-            )
-            if self.vad_enabled:
-                vad_config = types.AutomaticActivityDetection(
-                    disabled=False,
-                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_UNSPECIFIED,
-                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
-                    prefix_padding_ms=300,
-                    silence_duration_ms=800,
-                )
-
-            input_audio_transcription = self.input_audio_transcription
-            if not input_audio_transcription:
-                input_audio_transcription = types.AudioTranscriptionConfig(
-                    language_codes=['en-US']
-                )
-            output_audio_transcription = self.output_audio_transcription
-            if not output_audio_transcription:
-                output_audio_transcription = types.AudioTranscriptionConfig(
-                    language_codes=['en-US']
-                )
-
-            config = types.LiveConnectConfig(
-                response_modalities=["AUDIO"],
-                speech_config=types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name=self.voice_name
-                        )
-                    ),
-                    language_code=self.language_code
-                ),
-                system_instruction=system_instruction,
-                tools=tools_config or None,
-                input_audio_transcription=input_audio_transcription,
-                output_audio_transcription=output_audio_transcription,
-                explicit_vad_signal=self.vad_enabled,
-                realtime_input_config=types.RealtimeInputConfig(
-                    automatic_activity_detection=vad_config
-                ),
-            )
-
             session_context = self.client.aio.live.connect(
                 model=self.model,
-                config=config
+                config=self.config,
             )
 
             self.session = await session_context.__aenter__()
@@ -488,27 +424,3 @@ class GeminiLiveSession:
                 self.session_context = None
                 self.is_connected = False
 
-    def _get_tool_config(self) -> Optional[types.ToolListUnion]:
-        tools_config = []
-
-        if self.rag_corpus:
-            rag_store = types.VertexRagStore(
-                rag_resources=[
-                    types.VertexRagStoreRagResource(
-                        rag_corpus=self.rag_corpus
-                    )
-                ]
-            )
-
-            rag_tool = types.Tool(
-                retrieval=types.Retrieval(vertex_rag_store=rag_store)
-            )
-            tools_config.append(rag_tool)
-
-        if self.function_declarations:
-            tools_config.append(types.Tool(function_declarations=self.function_declarations))
-
-        return tools_config if tools_config and len(tools_config) > 0 else None
-
-    def _get_system_instruction(self) -> Optional[str]:
-        return self.system_instruction
