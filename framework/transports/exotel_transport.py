@@ -84,6 +84,8 @@ class ExotelTransport(BaseTransport):
                         filtered = chunk
                         if self.input_audio_filter:
                             filtered = await self.input_audio_filter.process(chunk)
+                        if not filtered:
+                            continue
                         yield AudioData(
                             data=filtered,
                             format=self.FRAMEWORK_INPUT_FORMAT,
