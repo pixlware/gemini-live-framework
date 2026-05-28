@@ -26,6 +26,7 @@ def build_gemini_live_config(
     language_code: Optional[str] = None,
     function_declarations: Optional[list[types.FunctionDeclaration]] = None,
     vad_enabled: bool = True,
+    enable_google_search: bool = False,
     # ── Everything else forwards to LiveConnectConfig as-is ──
     **kwargs,
 ) -> types.LiveConnectConfig:
@@ -61,7 +62,10 @@ def build_gemini_live_config(
 
     # ── tools ──
     if "tools" not in kwargs:
-        tools = _build_tools(function_declarations)
+        tools = _build_tools(
+            function_declarations=function_declarations,
+            enable_google_search=enable_google_search,
+        )
         if tools:
             kwargs["tools"] = tools
 
@@ -111,9 +115,13 @@ def build_gemini_live_config(
 
 def _build_tools(
     function_declarations: Optional[list[types.FunctionDeclaration]] = None,
+    enable_google_search: bool = False,
 ) -> Optional[list[types.Tool]]:
     """Assemble a tools list from function declarations and/or a RAG corpus."""
     tools: list[types.Tool] = []
+
+    if enable_google_search:
+        tools.append(types.Tool(google_search=types.GoogleSearch()))
 
     if function_declarations:
         tools.append(types.Tool(function_declarations=function_declarations))
