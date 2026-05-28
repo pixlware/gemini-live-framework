@@ -7,6 +7,8 @@ from typing import Any, Optional, Callable, Awaitable
 
 from google.genai import types
 
+from .logger import SessionLogger
+
 from .models import (
     AudioData,
     TextData,
@@ -47,7 +49,10 @@ class OrchestratorCallbacks:
     on_interrupted: Optional[Callable[[InterruptionData], Awaitable[None]]] = None
     on_voice_activity: Optional[Callable[[VoiceActivityData], Awaitable[None]]] = None
     on_turn_state_change: Optional[
-        Callable[[ConversationState, ConversationState], Awaitable[None]]
+        Callable[[ConversationState, ConversationState, Optional[float]], Awaitable[None]]
+    ] = None
+    on_usage_metadata: Optional[
+        Callable[[UsageMetadataData], Awaitable[None]]
     ] = None
 
 
@@ -64,10 +69,21 @@ class Orchestrator:
         callbacks: Optional[OrchestratorCallbacks] = None,
         user_idle_timer: Optional[Timer] = None,
         model_idle_timer: Optional[Timer] = None,
+        logger: Optional[Any] = None,
     ):
+        self.logger = logger or SessionLogger()
+
         self.transport = transport
+        self.transport.logger = self.logger
+
         self.gemini_session = gemini_session
+        self.gemini_session.logger = self.logger
+
         self.tool_handler = tool_handler
+        if self.tool_handler:
+            self.tool_handler.logger = self.logger
+            self.tool_handler.set_send_tool_result(self._send_tool_result)
+
         self.audio_recorder = audio_recorder
         self.transcription = transcription
         self.callbacks = callbacks or OrchestratorCallbacks()
@@ -82,9 +98,6 @@ class Orchestrator:
         )
         self._tool_dispatch_tasks: set[asyncio.Task] = set()
         self.is_running: bool = False
-
-        if self.tool_handler:
-            self.tool_handler.set_send_tool_result(self._send_tool_result)
 
         self._response_handlers: dict[
             GeminiLiveResponseType, Callable[[Any], Awaitable[None]]
@@ -111,7 +124,7 @@ class Orchestrator:
         Returns False if Gemini connection fails.
         """
         if self.is_running:
-            logger.warning("[Orchestrator] start() called while already running; ignoring")
+            self.logger.warning("start() called while already running; ignoring")
             return True
         self.is_running = True
 
@@ -185,6 +198,8 @@ class Orchestrator:
         in the same turn do not serialize behind one another and the Gemini
         receive loop stays responsive to cancellations and further events.
         """
+        if self.tool_handler is None:
+            return
         task = asyncio.create_task(self.tool_handler.handle_tool_call(tool_call))
         self._tool_dispatch_tasks.add(task)
         task.add_done_callback(self._on_tool_dispatch_done)
@@ -195,9 +210,7 @@ class Orchestrator:
             return
         exc = task.exception()
         if exc is not None:
-            logger.error(
-                "[Orchestrator] Tool dispatch task crashed: %s", exc, exc_info=exc
-            )
+            self.logger.error("Tool dispatch task crashed", error=str(exc))
 
     async def _handle_transport_messages(self):
         """Pipeline: transport -> Gemini."""
@@ -213,7 +226,7 @@ class Orchestrator:
                 case EventData() as event:
                     if self.callbacks.on_event:
                         await self.callbacks.on_event(event)
-        logger.info("[Orchestrator] Transport loop ended")
+        self.logger.info("Transport loop ended")
 
     async def _handle_gemini_responses(self):
         """Pipeline: Gemini -> transport (+ tool handler).
@@ -235,13 +248,11 @@ class Orchestrator:
                 if handler is not None:
                     await handler(response.data)
         except RuntimeError as e:
-            logger.info(
-                "[Orchestrator] Transport closed mid-response; ending Gemini loop (%s)",
-                e,
-            )
-        logger.info("[Orchestrator] Gemini response loop ended")
+            self.logger.info("Transport closed mid-response; ending Gemini loop", error=str(e))
+        self.logger.info("Gemini response loop ended")
 
     async def _on_audio(self, data: AudioData) -> None:
+        self.metric_tracker.on_ttfb_end()
         self.metric_tracker.on_audio_received()
         if self.audio_recorder:
             self.audio_recorder.record_model_audio(data.data)
@@ -267,14 +278,19 @@ class Orchestrator:
         old: ConversationState,
         new: ConversationState,
     ) -> None:
+        ttfb: Optional[float] = None
         if new == ConversationState.USER_TALKING:
             self.metric_tracker.on_user_turn()
         elif new == ConversationState.MODEL_TALKING:
             self.metric_tracker.on_model_turn()
+            if self.metric_tracker._ttfb_samples:
+                ttfb = self.metric_tracker._ttfb_samples[-1]
+
         if self.callbacks.on_turn_state_change:
-            await self.callbacks.on_turn_state_change(old, new)
+            await self.callbacks.on_turn_state_change(old, new, ttfb)
 
     async def _on_interrupted(self, data: InterruptionData) -> None:
+        self.metric_tracker.on_ttfb_cancel()
         self.metric_tracker.on_interruption()
         await self.transport.send_interruption(data)
         # force_stop emits a synthetic MODEL_END that the turn tracker will
@@ -286,18 +302,21 @@ class Orchestrator:
             await self.callbacks.on_interrupted(data)
 
     async def _on_user_voice_activity(self, data: VoiceActivityData) -> None:
-        logger.info(
-            f"[Orchestrator] Voice activity: User -> {data.voice_activity_type.value}"
+        self.logger.info(
+            "User voice activity state change",
+            role=data.role.value,
+            activity=data.voice_activity_type.value,
         )
         await self.transport.send_voice_activity(data)
         if data.voice_activity_type == types.VoiceActivityType.ACTIVITY_START:
             await self._turn_tracker.user_speech_start()
         elif data.voice_activity_type == types.VoiceActivityType.ACTIVITY_END:
             await self._turn_tracker.user_speech_end()
+            self.metric_tracker.on_ttfb_start()
         if self.callbacks.on_voice_activity:
             await self.callbacks.on_voice_activity(data)
 
-    async def _on_turn_complete(self, data: Optional[TurnCompleteData]) -> None:
+    async def _on_turn_complete(self, data: TurnCompleteData) -> None:
         await self.transport.flush_audio()
         await self.transport.send_turn_complete(data)
         await self._model_vad.on_turn_complete()
@@ -311,18 +330,18 @@ class Orchestrator:
         if self.tool_handler:
             self._dispatch_tool_call(data)
         else:
-            logger.warning("[Orchestrator] Tool call received but no handler registered")
+            self.logger.warning("Tool call received but no handler registered")
 
     async def _on_usage_metadata(self, data: UsageMetadataData) -> None:
         self.metric_tracker.on_usage_metadata(data)
+        if self.callbacks.on_usage_metadata:
+            await self.callbacks.on_usage_metadata(data)
 
     async def _on_tool_cancellation(self, data: ToolCallCancellationData) -> None:
         if self.tool_handler:
             await self.tool_handler.handle_cancellation(data.ids)
         else:
-            logger.warning(
-                "[Orchestrator] Tool cancellation received but no handler registered"
-            )
+            self.logger.warning("Tool cancellation received but no handler registered")
 
     async def _send_tool_result(self, result: ToolHandlerResult) -> None:
         """Forward a ``ToolHandlerResult`` to Gemini.
@@ -335,12 +354,14 @@ class Orchestrator:
         lands on the event loop while we are waiting would otherwise leak
         a stale response as ghost context into the next turn.
         """
-        if result.tool_id in self.tool_handler._cancelled_ids:
+        if self.tool_handler and result.tool_id in self.tool_handler._cancelled_ids:
             self.tool_handler._cancelled_ids.pop(result.tool_id, None)
-            logger.info(
-                f"[Orchestrator] Suppressed {result.action.value} "
-                f"tool={result.tool_name} id={result.tool_id} "
-                f"reason=cancelled_before_send"
+            self.logger.info(
+                "Suppressed tool result send due to tool cancellation",
+                action=result.action.value,
+                tool_name=result.tool_name,
+                tool_id=result.tool_id,
+                reason="cancelled_before_send",
             )
             return
 
@@ -359,9 +380,11 @@ class Orchestrator:
                         result.tool_id, result.tool_name, result.result,
                     )
         except Exception as e:
-            logger.error(
-                "[Orchestrator] Failed to forward tool result: %s", e,
-                exc_info=True,
+            self.logger.error(
+                "Failed to forward tool result",
+                error=str(e),
+                tool_name=result.tool_name,
+                tool_id=result.tool_id,
             )
 
     async def _run_pipelines(
@@ -386,10 +409,10 @@ class Orchestrator:
             for task in done:
                 exc = task.exception() if not task.cancelled() else None
                 if exc:
-                    logger.error("[Orchestrator] Pipeline failed: %s", exc)
+                    self.logger.error("Pipeline failed", error=str(exc))
         except Exception as e:
-            logger.error(
-                "[Orchestrator] Processing loop failed: %s", e, exc_info=True,
+            self.logger.error(
+                "Processing loop failed", error=str(e),
             )
             pending = {t for t in tasks if not t.done()}
         finally:
@@ -406,7 +429,11 @@ class Orchestrator:
 
     async def _on_model_voice_activity(self, data: VoiceActivityData) -> None:
         """Internal handler for synthesized model voice activity events."""
-        logger.info(f"[Orchestrator] Voice activity: Model -> {data.voice_activity_type.value}")
+        self.logger.info(
+            "Model voice activity state change",
+            role=data.role.value,
+            activity=data.voice_activity_type.value,
+        )
         if data.voice_activity_type == types.VoiceActivityType.ACTIVITY_START:
             await self._turn_tracker.model_speech_start()
         elif data.voice_activity_type == types.VoiceActivityType.ACTIVITY_END:

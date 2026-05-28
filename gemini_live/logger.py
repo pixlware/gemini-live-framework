@@ -17,6 +17,9 @@ and ``.env``). Relevant settings:
 
 import logging
 import sys
+from typing import Any, Dict, Optional
+
+from google.cloud import logging as gcp_logging
 
 from config import settings
 
@@ -39,6 +42,8 @@ LEVEL_COLORS = {
     logging.ERROR: RED,
     logging.CRITICAL: BOLD_RED,
 }
+
+_gcp_log_client = None
 
 
 class ColorFormatter(logging.Formatter):
@@ -99,6 +104,17 @@ def setup_logging(level: str | None = None) -> None:
     root.setLevel(log_level)
     root.addHandler(handler)
 
+    if settings.CLOUD_LOGGING_ENABLED:
+        global _gcp_log_client
+        try:
+            _gcp_log_client = gcp_logging.Client()
+            root.info("[Logger] Google Cloud Logging is enabled and verified.")
+        except Exception as e:
+            root.warning("[Logger] Google Cloud Logging is enabled but failed to initialize: %s", e)
+            _gcp_log_client = None
+    else:
+        root.info("[Logger] Google Cloud Logging is disabled.")
+
 
 def setup_telemetry() -> None:
     """Activate gemini-live-telemetry based on ``settings.TELEMETRY_MODE``.
@@ -134,3 +150,61 @@ def setup_telemetry() -> None:
 
     logger = logging.getLogger(__name__)
     logger.info(f"[Logger] Telemetry activated | mode={mode}")
+
+
+class SessionLogger:
+    """A simple, generic structured session logging client for the live framework.
+
+    Supports dynamic context binding (e.g., user_id, session_id), standard
+    logging severities, and nested custom data payloads.
+    """
+
+    def __init__(self, logger_name: str = "gemini_live", context: Optional[Dict[str, Any]] = None):
+        self.logger_name = logger_name
+        self._context = context or {}
+
+        # Initialize native logger for easy console fallback
+        self._logger = _gcp_log_client.logger(logger_name) if _gcp_log_client else logging.getLogger(logger_name)
+
+    def bind(self, **kwargs) -> None:
+        """Bind dynamic metadata (e.g., user_id, session_id) to the logging context."""
+        self._context.update(kwargs)
+
+    def unbind(self, *keys: str) -> None:
+        """Remove metadata keys from the logging context."""
+        for key in keys:
+            self._context.pop(key, None)
+
+    def debug(self, message: str, data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
+        self._log("DEBUG", message, data, **kwargs)
+
+    def info(self, message: str, data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
+        self._log("INFO", message, data, **kwargs)
+
+    def warning(self, message: str, data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
+        self._log("WARNING", message, data, **kwargs)
+
+    def error(self, message: str, data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
+        self._log("ERROR", message, data, **kwargs)
+
+    def critical(self, message: str, data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
+        self._log("CRITICAL", message, data, **kwargs)
+
+    def _log(self, severity: str, message: str, data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
+        payload = {}
+        if data:
+            payload.update(data)
+        if kwargs:
+            payload.update(kwargs)
+
+        if isinstance(self._logger, gcp_logging.Logger):
+            payload = {**self._context, **payload}
+            payload["message"] = payload.get("message", message)
+            try:
+                self._logger.log_struct(payload, severity=severity)
+            except Exception as e:
+                logging.getLogger(self.logger_name).error("[SessionLogger] Failed to write to GCP Cloud Logging: %s", e)
+        else:
+            log_msg = f"{message} | {payload}" if payload else message
+            level = getattr(logging, severity, logging.INFO)
+            self._logger.log(level, log_msg)

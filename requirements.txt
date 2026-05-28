@@ -21,6 +21,7 @@ soxr==1.0.0
 
 # Google Cloud & AI
 google-genai==1.73.1
+google-cloud-logging==3.15.0
 
 # Telemetry
 gemini-live-telemetry==0.1.1

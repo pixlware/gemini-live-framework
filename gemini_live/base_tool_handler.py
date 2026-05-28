@@ -46,10 +46,9 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from .models import ToolCallData
+from .logger import SessionLogger
 
-logger = logging.getLogger(__name__)
-
-DEDUP_COOLDOWN_SECONDS = 6.0
+DEDUP_COOLDOWN_SECONDS = 8.0
 
 
 @dataclass
@@ -126,6 +125,17 @@ class BaseToolHandler:
         self._processed_tool_ids: Dict[str, float] = {}
         self._in_flight_hashes: Dict[str, float] = {}
         self._cancelled_ids: Dict[str, float] = {}
+        self._session_logger: Optional[SessionLogger] = None
+
+    @property
+    def logger(self) -> SessionLogger:
+        if self._session_logger is None:
+            self._session_logger = SessionLogger()
+        return self._session_logger
+
+    @logger.setter
+    def logger(self, logger: SessionLogger) -> None:
+        self._session_logger = logger
 
     def set_send_tool_result(
         self,
@@ -166,16 +176,19 @@ class BaseToolHandler:
 
         config = self._get_tool_config(tool_call.name)
         if config is None:
-            logger.warning(
-                f"[ToolHandler] Rejecting tool={tool_call.name} id={tool_call.id} "
-                "reason=not_registered_with_@tool"
-            )
-            await self._send_tool_result(ToolHandlerResult(
-                action=ToolResponseAction.SEND_RESPONSE,
-                tool_id=tool_call.id,
+            self.logger.warning(
+                "Rejecting unregistered tool call",
                 tool_name=tool_call.name,
-                result={"success": False, "error": f"Unknown tool: {tool_call.name}"},
-            ))
+                tool_id=tool_call.id,
+                reason="not_registered_with_@tool",
+            )
+            if self._send_tool_result:
+                await self._send_tool_result(ToolHandlerResult(
+                    action=ToolResponseAction.SEND_RESPONSE,
+                    tool_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    result={"success": False, "error": f"Unknown tool: {tool_call.name}"},
+                ))
             self._finish_hash(self._compute_hash(tool_call.name, tool_call.args))
             return
 
@@ -202,7 +215,7 @@ class BaseToolHandler:
                 task.cancel()
                 cancelled += 1
         if cancelled:
-            logger.info(f"[ToolHandler] Cancelled {cancelled}/{len(tool_ids)} pending tasks")
+            self.logger.info("Cancelled pending tasks", cancelled_count=cancelled, requested_count=len(tool_ids))
         await self.on_cancelled(tool_ids)
 
     async def cleanup(self) -> None:
@@ -228,45 +241,52 @@ class BaseToolHandler:
 
     async def _handle_blocking(self, tool_call: ToolCallData) -> None:
         tool_hash = self._compute_hash(tool_call.name, tool_call.args)
-        logger.info(f"[ToolHandler] Executing tool={tool_call.name} id={tool_call.id} mode=blocking")
+        self.logger.info("Executing tool in blocking mode", tool_name=tool_call.name, tool_id=tool_call.id)
         try:
             result = await self._execute(tool_call)
         except Exception as e:
-            logger.error(
-                "[ToolHandler] Execution failed tool=%s mode=blocking: %s",
-                tool_call.name, e, exc_info=True,
+            self.logger.error(
+                "Execution failed in blocking mode",
+                tool_name=tool_call.name,
+                tool_id=tool_call.id,
+                error=str(e),
             )
             result = {"success": False, "error": str(e)}
 
         if tool_call.id in self._cancelled_ids:
-            logger.info(
-                f"[ToolHandler] Suppressed send_response tool={tool_call.name} "
-                f"id={tool_call.id} reason=cancelled_after_completion"
+            self.logger.info(
+                "Suppressed blocking tool response due to cancellation",
+                tool_name=tool_call.name,
+                tool_id=tool_call.id,
+                reason="cancelled_after_completion",
             )
             self._cancelled_ids.pop(tool_call.id, None)
             self._finish_hash(tool_hash)
             return
 
-        await self._send_tool_result(ToolHandlerResult(
-            action=ToolResponseAction.SEND_RESPONSE,
-            tool_id=tool_call.id,
-            tool_name=tool_call.name,
-            result=result,
-        ))
+        if self._send_tool_result:
+            await self._send_tool_result(ToolHandlerResult(
+                action=ToolResponseAction.SEND_RESPONSE,
+                tool_id=tool_call.id,
+                tool_name=tool_call.name,
+                result=result,
+            ))
         self._finish_hash(tool_hash)
         await self.on_complete(tool_call, result)
 
     async def _handle_non_blocking(
         self, tool_call: ToolCallData, config: ToolConfig
     ) -> None:
-        logger.info(f"[ToolHandler] Scheduling tool={tool_call.name} id={tool_call.id} mode=non-blocking")
+        self.logger.info("Scheduling non-blocking tool execution", tool_name=tool_call.name, tool_id=tool_call.id)
 
-        await self._send_tool_result(ToolHandlerResult(
-            action=ToolResponseAction.SEND_INTERIM,
-            tool_id=tool_call.id,
-            tool_name=tool_call.name,
-            interim_message=config.interim_message,
-        ))
+
+        if self._send_tool_result:
+            await self._send_tool_result(ToolHandlerResult(
+                action=ToolResponseAction.SEND_INTERIM,
+                tool_id=tool_call.id,
+                tool_name=tool_call.name,
+                interim_message=config.interim_message,
+            ))
 
         task = asyncio.create_task(
             self._run_non_blocking(tool_call, config.execution_delay)
@@ -282,32 +302,37 @@ class BaseToolHandler:
                 await asyncio.sleep(delay)
             result = await self._execute(tool_call)
         except asyncio.CancelledError:
-            logger.info(f"[ToolHandler] Cancelled tool={tool_call.name} id={tool_call.id}")
+            self.logger.info("Cancelled non-blocking tool execution", tool_name=tool_call.name, tool_id=tool_call.id)
             self._finish_hash(tool_hash)
             return
         except Exception as e:
-            logger.error(
-                "[ToolHandler] Execution failed tool=%s mode=non-blocking: %s",
-                tool_call.name, e, exc_info=True,
+            self.logger.error(
+                "Execution failed in non-blocking mode",
+                tool_name=tool_call.name,
+                tool_id=tool_call.id,
+                error=str(e),
             )
             result = {"success": False, "error": str(e)}
 
         if tool_call.id in self._cancelled_ids:
-            logger.info(
-                f"[ToolHandler] Suppressed send_context tool={tool_call.name} "
-                f"id={tool_call.id} reason=cancelled_after_completion"
+            self.logger.info(
+                "Suppressed non-blocking tool response due to cancellation",
+                tool_name=tool_call.name,
+                tool_id=tool_call.id,
+                reason="cancelled_after_completion",
             )
             self._cancelled_ids.pop(tool_call.id, None)
             self._finish_hash(tool_hash)
             self._pending_tasks.pop(tool_call.id, None)
             return
 
-        await self._send_tool_result(ToolHandlerResult(
-            action=ToolResponseAction.SEND_CONTEXT,
-            tool_id=tool_call.id,
-            tool_name=tool_call.name,
-            result=result,
-        ))
+        if self._send_tool_result:
+            await self._send_tool_result(ToolHandlerResult(
+                action=ToolResponseAction.SEND_CONTEXT,
+                tool_id=tool_call.id,
+                tool_name=tool_call.name,
+                result=result,
+            ))
         self._finish_hash(tool_hash)
         self._pending_tasks.pop(tool_call.id, None)
         await self.on_complete(tool_call, result)
@@ -322,12 +347,22 @@ class BaseToolHandler:
         self._purge_expired(now)
 
         if tool_call.id in self._processed_tool_ids:
-            logger.warning(f"[ToolHandler] Duplicate skipped tool={tool_call.name} id={tool_call.id} reason=same_id")
+            self.logger.warning(
+                "Duplicate tool call skipped (ID duplicate)",
+                tool_name=tool_call.name,
+                tool_id=tool_call.id,
+                reason="same_id",
+            )
             return True
 
         tool_hash = self._compute_hash(tool_call.name, tool_call.args)
         if tool_hash in self._in_flight_hashes and now < self._in_flight_hashes[tool_hash]:
-            logger.warning(f"[ToolHandler] Duplicate skipped tool={tool_call.name} id={tool_call.id} reason=same_content")
+            self.logger.warning(
+                "Duplicate tool call skipped (content duplicate)",
+                tool_name=tool_call.name,
+                tool_id=tool_call.id,
+                reason="same_content",
+            )
             return True
 
         self._processed_tool_ids[tool_call.id] = now

@@ -22,7 +22,7 @@ from ..models import (
     TurnCompleteData,
 )
 
-logger = logging.getLogger(__name__)
+from ..logger import SessionLogger
 
 FRAMEWORK_INPUT_FORMAT = AudioFormat.PCM16
 FRAMEWORK_INPUT_SAMPLE_RATE = 16000
@@ -53,6 +53,17 @@ class BaseTransport(BaseModel, ABC):
     _input_audio_buffer: BufferService = PrivateAttr()
     _output_transcoder: Optional[AudioTranscoder] = PrivateAttr(default=None)
     _output_audio_buffer: BufferService = PrivateAttr()
+    _session_logger: Optional[SessionLogger] = PrivateAttr(default=None)
+
+    @property
+    def logger(self) -> SessionLogger:
+        if self._session_logger is None:
+            self._session_logger = SessionLogger()
+        return self._session_logger
+
+    @logger.setter
+    def logger(self, logger: SessionLogger) -> None:
+        self._session_logger = logger
 
     def model_post_init(self, __context: Any) -> None:
         self._input_transcoder = build_transcoder(
@@ -73,9 +84,9 @@ class BaseTransport(BaseModel, ABC):
         try:
             await self.flush_audio()
         except Exception as e:
-            logger.debug(
-                "[%s] flush_audio during stop failed: %s",
-                type(self).__name__, e,
+            self.logger.debug(
+                f"flush_audio during stop failed",
+                error=str(e),
             )
         self.is_running = False
         if self.input_audio_filter:
@@ -92,13 +103,13 @@ class BaseTransport(BaseModel, ABC):
                 async for data in self.receive_message(message):
                     yield data
         except WebSocketDisconnect:
-            logger.info("[%s] WebSocket disconnected", type(self).__name__)
+            self.logger.info("WebSocket disconnected")
         except TransportClosed:
-            logger.info("[%s] Transport closed", type(self).__name__)
+            self.logger.info("Transport closed")
         except Exception as e:
-            logger.error(
-                "[%s] Error receiving: %s",
-                type(self).__name__, e, exc_info=True,
+            self.logger.error(
+                "Error receiving message",
+                error=str(e),
             )
 
     @abstractmethod
