@@ -3,7 +3,7 @@ Main FastAPI application for Classplus Calling Bot.
 Handles incoming requests and coordinates between services.
 """
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
@@ -60,5 +60,6 @@ if __name__ == "__main__":
         "app:app",
         host='0.0.0.0',
         port=settings.BACKEND_PORT,
-        reload=settings.DEBUG_MODE
+        reload=settings.DEBUG_MODE,
+        ws_ping_interval=10.0,
     )
