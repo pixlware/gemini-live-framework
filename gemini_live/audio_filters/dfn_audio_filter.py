@@ -16,11 +16,35 @@ from typing import Optional
 
 import numpy as np
 
+from config import settings
+
 from .base_audio_filter import BaseAudioFilter
 
 logger = logging.getLogger(__name__)
 
 try:
+    if settings.DFN_THREAD_LIMIT > 0:
+        import onnxruntime as ort
+
+        # 1. Save the original ONNX InferenceSession
+        _original_session = ort.InferenceSession
+
+        # 2. Create a fake session that forces the thread limits
+        def _patched_session(*args, **kwargs):
+            options = kwargs.get('sess_options')
+            if not options:
+                options = ort.SessionOptions()
+
+            # Force threading
+            options.intra_op_num_threads = settings.DFN_THREAD_LIMIT
+            options.inter_op_num_threads = settings.DFN_THREAD_LIMIT
+
+            kwargs['sess_options'] = options
+            return _original_session(*args, **kwargs)
+
+        # 3. Override ONNX Runtime's session with our restricted one
+        ort.InferenceSession = _patched_session
+
     from dfnstream_py import DeepFilterNetStreamingONNX
     import soxr
     _HAS_DFN = True

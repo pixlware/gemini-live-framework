@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     GEMINI_LIVE_MODEL: str = "gemini-live-2.5-flash-native-audio"
     GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None
 
+    # Audio / DFN
+    DFN_THREAD_LIMIT: int = 0
+
     # Telemetry
     TELEMETRY_MODE: str = "disabled"
 
