@@ -22,6 +22,8 @@ class MetricTracker:
         self.total_usage: UsageMetadataData = UsageMetadataData()
         self.started_at: Optional[float] = None
         self.ended_at: Optional[float] = None
+        self._ttfb_samples: list[float] = []
+        self._ttfb_start: Optional[float] = None
 
     @property
     def total_duration_seconds(self) -> float:
@@ -63,6 +65,26 @@ class MetricTracker:
     def on_model_transcript(self, text: str) -> None:
         self.model_word_count += len(text.split())
 
+    def on_ttfb_start(self) -> None:
+        """Mark the moment the user finishes speaking (start the TTFB clock)."""
+        self._ttfb_start = time.monotonic()
+
+    def on_ttfb_end(self) -> None:
+        """Record a TTFB sample when the first model audio byte arrives."""
+        if self._ttfb_start is not None:
+            self._ttfb_samples.append(time.monotonic() - self._ttfb_start)
+            self._ttfb_start = None
+
+    def on_ttfb_cancel(self) -> None:
+        """Discard a pending TTFB measurement (e.g. on interruption)."""
+        self._ttfb_start = None
+
+    @property
+    def avg_ttfb(self) -> Optional[float]:
+        if not self._ttfb_samples:
+            return None
+        return sum(self._ttfb_samples) / len(self._ttfb_samples)
+
     def on_usage_metadata(self, data: UsageMetadataData) -> None:
         self.total_usage.prompt_token_count += data.prompt_token_count
         self.total_usage.response_token_count += data.response_token_count
@@ -83,6 +105,8 @@ class MetricTracker:
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "total_duration_seconds": round(self.total_duration_seconds, 2),
+            "avg_ttfb": round(self.avg_ttfb, 4) if self.avg_ttfb is not None else None,
+            "ttfb_samples": [round(s, 4) for s in self._ttfb_samples],
             "total_usage": self.total_usage.model_dump(),
         }
 
@@ -93,7 +117,7 @@ class MetricTracker:
         whole session summary on one line so it lands as a single entry.
         """
         u = self.total_usage
-        return (
+        parts = (
             f"duration={self.total_duration_seconds:.2f}s "
             f"audio_sent={self.audio_packets_sent} "
             f"audio_recv={self.audio_packets_received} "
@@ -109,3 +133,6 @@ class MetricTracker:
             f"thoughts_tokens={u.thoughts_token_count} "
             f"tool_use_tokens={u.tool_use_prompt_token_count}"
         )
+        if self.avg_ttfb is not None:
+            parts += f" avg_ttfb={self.avg_ttfb:.4f}s"
+        return parts
