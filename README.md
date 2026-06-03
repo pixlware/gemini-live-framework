@@ -121,9 +121,11 @@ Send 16 kHz PCM16 mono audio as binary WebSocket frames; receive 24 kHz PCM16 mo
 
 **Transcription** — Merged or streaming conversation history via `Transcription`, with `on_transcript` callbacks and `TranscriptEntry` records.
 
-**Session metrics** — Turn counts, interruptions, word counts, and aggregated Gemini token usage via `MetricTracker`.
+**Session metrics** — Turn counts, interruptions, word counts, aggregated Gemini token usage, and per-turn time-to-first-byte (TTFB) via `MetricTracker` (user end-of-speech to first model audio byte).
 
-**Logging & Telemetry** — Colored/plain log formatter with a `DISABLED` mode, plus optional [`gemini-live-telemetry`](https://pypi.org/project/gemini-live-telemetry/) for tokens, latency (TTFB), turns, tools, and audio — with local JSON export or Cloud Monitoring and an auto-created dashboard.
+**Session logging** — `SessionLogger` provides structured logs with bound context (e.g. call ID, Gemini session ID). The `Orchestrator` shares one logger across transport, Gemini session, tools, transcription, recording, metrics, and timers. Optional export to Google Cloud Logging when `CLOUD_LOGGING_ENABLED` is set.
+
+**Application logging & telemetry** — `setup_logging()` configures colored or plain console output (`LOG_LEVEL`, including `DISABLED`). [`gemini-live-telemetry`](https://pypi.org/project/gemini-live-telemetry/) instruments the `google-genai` SDK separately for tokens, latency, turns, tools, and audio — with local JSON export or Cloud Monitoring and an auto-created dashboard.
 
 ## Configuration
 
@@ -146,7 +148,9 @@ Only four variables matter to get started (full list below).
 | `BACKEND_PORT` | Server bind port | `8000` |
 | `BACKEND_URL` | Public base URL (used for logging and callbacks) | `http://localhost:8000` |
 | `DEBUG_MODE` | Enables Uvicorn auto-reload | `false` |
-| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, or `ERROR` | `INFO` |
+| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `DISABLED` | `INFO` |
+| `CLOUD_LOGGING_ENABLED` | Export `SessionLogger` payloads to Google Cloud Logging | `false` |
+| `DFN_THREAD_LIMIT` | ONNX intra/inter op thread cap for DeepFilterNet (`0` = library default) | `0` |
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID for Vertex AI | `""` |
 | `GOOGLE_CLOUD_LOCATION` | GCP region for ADC / credential auto-detection | `""` |
 | `GEMINI_LOCATION` | Vertex AI region that `GeminiLiveSession` connects to | `us-central1` |
@@ -210,7 +214,7 @@ class MyFilter(BaseAudioFilter):
 transport = FastapiTransport(websocket=ws, input_audio_filter=MyFilter())
 ```
 
-The framework ships with `DeepFilterNetAudioFilter` — an ONNX-based streaming denoiser for 16 kHz PCM16 mono. It internally upsamples to 48 kHz via `soxr`, runs DeepFilterNet frame-by-frame, and downsamples back. Requires the optional `dfnstream-py` dependency; gracefully bypasses audio if missing.
+The framework ships with `DeepFilterNetAudioFilter` — an ONNX-based streaming denoiser for 16 kHz PCM16 mono. It internally upsamples to 48 kHz via `soxr`, runs DeepFilterNet frame-by-frame, and downsamples back. Requires the optional `dfnstream-py` dependency; gracefully bypasses audio if missing. Set `DFN_THREAD_LIMIT` to cap ONNX thread usage on CPU-constrained hosts.
 
 ```python
 from gemini_live.audio_filters.dfn_audio_filter import DeepFilterNetAudioFilter
@@ -263,8 +267,9 @@ orchestrator = Orchestrator(
 <summary><b>Transcription, turn tracking & timers</b></summary>
 
 - **`Transcription`** — maintains a `TranscriptEntry` history and fires an `on_transcript` callback. `TranscriptMode.MERGED` fires once per finalized model turn; `STREAMING` fires on every chunk.
-- **`TurnTracker` + `ConversationState`** — a state machine (`INITIAL`, `USER_TALKING`, `MODEL_TALKING`, `WAITING_FOR_MODEL`, `WAITING_FOR_USER`) driven by user/model VAD. Invokes `OrchestratorCallbacks.on_turn_state_change(old, new)` on every transition.
-- **`Timer`** — async timer with sorted trigger points, pause/resume, and max cycles. Used for idle detection and nudge flows; pass a user-idle and/or model-idle `Timer` into the `Orchestrator` and the `TurnTracker` wires them to the conversation state automatically.
+- **`TurnTracker` + `ConversationState`** — a state machine (`INITIAL`, `USER_TALKING`, `MODEL_TALKING`, `WAITING_FOR_MODEL`, `WAITING_FOR_USER`) driven by user/model VAD. Invokes `OrchestratorCallbacks.on_turn_state_change(old, new, ttfb)` on every transition; `ttfb` is the seconds from user end-of-speech to first model audio when entering `WAITING_FOR_USER`, otherwise `None`.
+- **`Timer`** — async timer with a `name`, sorted trigger points, pause/resume, and max cycles. Used for idle detection and nudge flows; pass a user-idle and/or model-idle `Timer` into the `Orchestrator` and the `TurnTracker` wires them to the conversation state automatically.
+- **`Orchestrator.actions`** — `await orchestrator.actions.trigger_bot_timeout()` forces `WAITING_FOR_USER` when a model-idle timer fires without model audio (e.g. custom nudge flows).
 
 ```python
 from gemini_live.timer import Timer
@@ -273,7 +278,7 @@ from gemini_live.orchestrator import Orchestrator, OrchestratorCallbacks
 async def on_user_idle(elapsed_seconds: int) -> None:
     ...  # e.g. send "Are you still there?" through Gemini
 
-user_idle = Timer(triggers=[10, 20], on_trigger=on_user_idle)
+user_idle = Timer(name="UserIdle", triggers=[10, 20], on_trigger=on_user_idle)
 
 orchestrator = Orchestrator(
     transport=transport,
@@ -281,6 +286,9 @@ orchestrator = Orchestrator(
     user_idle_timer=user_idle,
     callbacks=OrchestratorCallbacks(on_turn_state_change=log_state),
 )
+
+# In a model-idle timer callback (after orchestrator exists):
+# await orchestrator.actions.trigger_bot_timeout()
 ```
 
 </details>
@@ -297,6 +305,64 @@ from gemini_live.audio_recorder import AudioRecorder
 
 recorder = AudioRecorder()  # defaults to ./recordings/<uuid>.wav
 orchestrator = Orchestrator(transport=t, gemini_session=s, audio_recorder=recorder)
+```
+
+</details>
+
+<details>
+<summary><b>Session logging</b></summary>
+
+Call `setup_logging()` once at process startup (before other framework imports that log). It reads `LOG_LEVEL` and `CLOUD_LOGGING_ENABLED` from the environment.
+
+Pass a `SessionLogger` into the `Orchestrator` to share one logging context across the whole call pipeline. Bind metadata after you know it (call ID, user ID, etc.); the Gemini session binds `gemini_session_id` after connect.
+
+```python
+from gemini_live.logger import setup_logging, SessionLogger
+from gemini_live.orchestrator import Orchestrator
+
+setup_logging()
+
+logger = SessionLogger()
+logger.bind(call_id="exotel-abc123")
+
+orchestrator = Orchestrator(
+    transport=transport,
+    gemini_session=session,
+    logger=logger,
+)
+
+# Structured fields are passed as keyword arguments:
+logger.info("[MyApp] Call started", agent_id="support-v1")
+```
+
+When `CLOUD_LOGGING_ENABLED=true` and GCP credentials are available, `SessionLogger` writes structured payloads to Cloud Logging; otherwise logs go to the console via the standard formatter from `setup_logging()`.
+
+At end of call, `orchestrator.metric_tracker.stop(log_summary=True)` emits a structured session summary (including TTFB aggregates) through the same logger.
+
+</details>
+
+<details>
+<summary><b>Gemini Live config</b></summary>
+
+`build_gemini_live_config()` applies battle-tested defaults and forwards any other `LiveConnectConfig` fields via `**kwargs`.
+
+Convenience shortcuts:
+
+| Kwarg | Effect |
+|---|---|
+| `voice_name`, `language_code` | Builds `speech_config` (do not also pass `speech_config`) |
+| `function_declarations` | Appends custom tools alongside optional built-ins |
+| `vad_enabled` | Enables automatic activity detection with tuned thresholds |
+| `enable_google_search` | Adds the built-in Google Search tool |
+
+```python
+config = build_gemini_live_config(
+    system_instruction="You are a helpful voice assistant.",
+    voice_name="Zephyr",
+    language_code="en-US",
+    function_declarations=my_declarations,
+    enable_google_search=True,
+)
 ```
 
 </details>
