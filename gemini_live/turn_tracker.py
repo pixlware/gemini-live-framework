@@ -75,26 +75,6 @@ class TurnTracker:
             self._model_idle_timer.logger = logger
 
     @property
-    def user_idle_timer(self) -> Optional[Timer]:
-        return self._user_idle_timer
-
-    @user_idle_timer.setter
-    def user_idle_timer(self, timer: Optional[Timer]) -> None:
-        self._user_idle_timer = timer
-        if timer and self._session_logger:
-            timer.logger = self._session_logger
-
-    @property
-    def model_idle_timer(self) -> Optional[Timer]:
-        return self._model_idle_timer
-
-    @model_idle_timer.setter
-    def model_idle_timer(self, timer: Optional[Timer]) -> None:
-        self._model_idle_timer = timer
-        if timer and self._session_logger:
-            timer.logger = self._session_logger
-
-    @property
     def state(self) -> ConversationState:
         return self._state
 

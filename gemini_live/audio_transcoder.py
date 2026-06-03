@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, TypeAlias
 
 try:
     import audioop
@@ -15,6 +15,8 @@ from .models import AudioFormat
 PCM16_SAMPLE_WIDTH = 2
 MONO_CHANNELS = 1
 MULAW_SAMPLE_RATE = 8000
+
+_RatecvState: TypeAlias = tuple[int, tuple[tuple[int, int], ...]]
 
 
 class AudioTranscoder(ABC):
@@ -33,7 +35,7 @@ class PcmResampler(AudioTranscoder):
         self._src_rate = src_rate
         self._dst_rate = dst_rate
         self._noop = src_rate == dst_rate
-        self._state: Optional[object] = None
+        self._state: _RatecvState | None = None
 
     def process(self, chunk: bytes) -> bytes:
         if self._noop or not chunk:

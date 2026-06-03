@@ -23,7 +23,7 @@ class ModelVAD:
     ):
         self._on_event = on_event
         self._is_speaking = False
-        self._turn_start: Optional[float] = None
+        self._turn_start: float = 0.0
         self._turn_audio_duration: float = 0.0
         self._stop_task: Optional[asyncio.Task] = None
 
@@ -86,5 +86,5 @@ class ModelVAD:
 
     def _reset_turn_state(self) -> None:
         self._is_speaking = False
-        self._turn_start = None
+        self._turn_start = 0.0
         self._turn_audio_duration = 0.0
