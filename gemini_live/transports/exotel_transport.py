@@ -1,14 +1,11 @@
 import base64
 import json
-import logging
 from typing import AsyncIterator, Optional
 
 from starlette.types import Message
 
 from .base_transport import BaseTransport, TransportClosed
 from ..models import Data, EventData, InterruptionData
-
-logger = logging.getLogger(__name__)
 
 
 class ExotelTransport(BaseTransport):
@@ -25,12 +22,12 @@ class ExotelTransport(BaseTransport):
         event = payload.get("event")
 
         if event == "connected":
-            logger.info("[ExotelTransport] Connected event received")
+            self.logger.info("[ExotelTransport] Connected event received")
 
         elif event == "start":
             start_data = payload.get("start", {})
             self.stream_sid = start_data.get("stream_sid")
-            logger.info("[ExotelTransport] Stream started: %s", self.stream_sid)
+            self.logger.info(f"[ExotelTransport] Stream started: {self.stream_sid}")
             yield EventData(event="start", metadata=start_data)
 
         elif event == "media":
@@ -43,7 +40,7 @@ class ExotelTransport(BaseTransport):
             yield EventData(event="mark", metadata=payload.get("mark", {}))
 
         elif event == "stop":
-            logger.info("[ExotelTransport] Stream stopped: %s", self.stream_sid)
+            self.logger.info(f"[ExotelTransport] Stream stopped: {self.stream_sid}")
             raise TransportClosed
 
     async def send_audio(self, raw: bytes) -> None:

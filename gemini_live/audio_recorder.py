@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import datetime
-import logging
 import os
 import time
 import uuid
 import wave
+from typing import Optional
 
 import numpy as np
 
 from .audio_transcoder import PcmResampler
-
-logger = logging.getLogger(__name__)
+from .logger import SessionLogger
 
 BYTES_PER_SAMPLE = 2  # 16-bit PCM
 USER_SAMPLE_RATE = 16_000
@@ -28,6 +27,7 @@ class AudioRecorder:
     def __init__(
         self,
         output_dir: str = ".recordings",
+        logger: Optional[SessionLogger] = None,
     ):
         self._output_dir = output_dir
         self.filename: str = uuid.uuid4().hex
@@ -41,6 +41,17 @@ class AudioRecorder:
         self._user_resampler = PcmResampler(USER_SAMPLE_RATE, OUTPUT_SAMPLE_RATE)
 
         self.is_recording = False
+        self._session_logger = logger
+
+    @property
+    def logger(self) -> SessionLogger:
+        if self._session_logger is None:
+            self._session_logger = SessionLogger()
+        return self._session_logger
+
+    @logger.setter
+    def logger(self, logger: SessionLogger) -> None:
+        self._session_logger = logger
 
     def start(self) -> None:
         """Begin recording. Call once per session."""
@@ -48,7 +59,7 @@ class AudioRecorder:
         self._start_time = datetime.datetime.now(datetime.timezone.utc)
         self.is_recording = True
 
-        logger.info("[AudioRecorder] Recording started")
+        self.logger.info("[AudioRecorder] Recording started")
 
     def record_user_audio(self, audio_data: bytes) -> None:
         """Append a chunk of user audio (PCM16 @ 16 kHz)."""
@@ -70,7 +81,7 @@ class AudioRecorder:
         self.is_recording = False
 
         if not self._user_track and not self._model_track:
-            logger.warning("[AudioRecorder] No audio captured — skipping write")
+            self.logger.warning("[AudioRecorder] No audio captured — skipping write")
             return
 
         try:
@@ -84,19 +95,20 @@ class AudioRecorder:
 
             duration_sec = max_len / (OUTPUT_SAMPLE_RATE * BYTES_PER_SAMPLE)
             filepath = self._save_recording(mono)
-
-            logger.info(
-                "[AudioRecorder] Recording saved: path=%s, start=%s, end=%s, duration=%.1fs",
-                filepath,
-                self._start_time.isoformat() if self._start_time else "?",
-                datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                duration_sec,
+            start_time = self._start_time.isoformat() if self._start_time else "?"
+            end_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            info = (
+                f"path={filepath}",
+                f"start={start_time}",
+                f"end={end_time}",
+                f"duration={duration_sec:.1f}s",
             )
+
+            self.logger.info(f"[AudioRecorder] Recording saved: {info}")
         except Exception as exc:
-            logger.error(
+            self.logger.error(
                 "[AudioRecorder] Failed to save recording; audio for this call will be DISCARDED: %s",
-                exc,
-                exc_info=True,
+                error=str(exc),
             )
         finally:
             self._user_track = bytearray()

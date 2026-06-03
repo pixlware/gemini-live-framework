@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     GEMINI_LOCATION: str = "us-central1"
     GEMINI_LIVE_MODEL: str = "gemini-live-2.5-flash-native-audio"
     GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None
+    CLOUD_LOGGING_ENABLED: bool = False
 
     # Audio / DFN
     DFN_THREAD_LIMIT: int = 0

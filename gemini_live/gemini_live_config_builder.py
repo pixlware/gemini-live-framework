@@ -46,7 +46,7 @@ def build_gemini_live_config(
     # ── speech_config ──
     if "speech_config" in kwargs and (voice_name != "Zephyr" or language_code is not None):
         logger.warning(
-            "[ConfigBuilder] speech_config= provided alongside voice_name/language_code "
+            "[GeminiLiveConfigBuilder] speech_config= provided alongside voice_name/language_code "
             "shortcuts; speech_config wins and the shortcuts are ignored. "
             "Use one or the other."
         )
@@ -77,7 +77,7 @@ def build_gemini_live_config(
     # ── VAD / realtime input ──
     if "realtime_input_config" in kwargs and vad_enabled is not True:
         logger.warning(
-            "[ConfigBuilder] realtime_input_config= provided alongside vad_enabled=False; "
+            "[GeminiLiveConfigBuilder] realtime_input_config= provided alongside vad_enabled=False; "
             "realtime_input_config wins and vad_enabled is ignored."
         )
     if vad_enabled:
@@ -105,7 +105,7 @@ def build_gemini_live_config(
 
     config = types.LiveConnectConfig(**kwargs)
     logger.debug(
-        "[ConfigBuilder] Built LiveConnectConfig: %s",
+        "[GeminiLiveConfigBuilder] Built LiveConnectConfig: %s",
         config.model_dump_json(exclude_none=True, exclude_defaults=True),
     )
     return config

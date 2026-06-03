@@ -1,4 +1,3 @@
-import logging
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator, Optional
 
@@ -76,6 +75,8 @@ class BaseTransport(BaseModel, ABC):
             self.output_audio_format, self.output_audio_sample_rate,
         )
         self._output_audio_buffer = BufferService(self.output_audio_chunk_size)
+        if self.input_audio_filter:
+            self.input_audio_filter.logger = self.logger
 
     async def start(self) -> None:
         self.is_running = True

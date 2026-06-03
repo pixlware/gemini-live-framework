@@ -11,13 +11,11 @@ timer mid-utterance.
 
 from __future__ import annotations
 
-import logging
 from enum import Enum
 from typing import Awaitable, Callable, Optional
 
 from .timer import Timer
-
-logger = logging.getLogger(__name__)
+from .logger import SessionLogger
 
 
 class ConversationState(Enum):
@@ -48,11 +46,53 @@ class TurnTracker:
         user_idle_timer: Optional[Timer] = None,
         model_idle_timer: Optional[Timer] = None,
         on_state_change: Optional[OnStateChange] = None,
+        logger: Optional[SessionLogger] = None,
     ) -> None:
         self._user_idle_timer = user_idle_timer
         self._model_idle_timer = model_idle_timer
         self._on_state_change = on_state_change
         self._state = ConversationState.INITIAL
+        self._session_logger = logger
+
+        if logger:
+            if self._user_idle_timer:
+                self._user_idle_timer.logger = logger
+            if self._model_idle_timer:
+                self._model_idle_timer.logger = logger
+
+    @property
+    def logger(self) -> SessionLogger:
+        if self._session_logger is None:
+            self._session_logger = SessionLogger()
+        return self._session_logger
+
+    @logger.setter
+    def logger(self, logger: SessionLogger) -> None:
+        self._session_logger = logger
+        if self._user_idle_timer:
+            self._user_idle_timer.logger = logger
+        if self._model_idle_timer:
+            self._model_idle_timer.logger = logger
+
+    @property
+    def user_idle_timer(self) -> Optional[Timer]:
+        return self._user_idle_timer
+
+    @user_idle_timer.setter
+    def user_idle_timer(self, timer: Optional[Timer]) -> None:
+        self._user_idle_timer = timer
+        if timer and self._session_logger:
+            timer.logger = self._session_logger
+
+    @property
+    def model_idle_timer(self) -> Optional[Timer]:
+        return self._model_idle_timer
+
+    @model_idle_timer.setter
+    def model_idle_timer(self, timer: Optional[Timer]) -> None:
+        self._model_idle_timer = timer
+        if timer and self._session_logger:
+            timer.logger = self._session_logger
 
     @property
     def state(self) -> ConversationState:
@@ -103,11 +143,25 @@ class TurnTracker:
             self._user_idle_timer.start()
         await self._transition(ConversationState.WAITING_FOR_USER)
 
+    async def bot_timeout(self) -> None:
+        """Transition state to WAITING_FOR_USER and start the user idle timer after a bot idle timeout."""
+        if self._state != ConversationState.WAITING_FOR_MODEL:
+            return
+        if self._model_idle_timer:
+            self._model_idle_timer.reset()
+        if self._user_idle_timer:
+            self._user_idle_timer.start()
+        await self._transition(ConversationState.WAITING_FOR_USER)
+
     async def _transition(self, new_state: ConversationState) -> None:
         old_state = self._state
         if old_state == new_state:
             return
         self._state = new_state
-        logger.debug("[TurnTracker] %s -> %s", old_state.value, new_state.value)
+        self.logger.debug(
+            f"[TurnTracker] Turn state changed: {old_state.value} -> {new_state.value}",
+            old_turn_state=old_state.value,
+            new_turn_state=new_state.value,
+        )
         if self._on_state_change:
             await self._on_state_change(old_state, new_state)

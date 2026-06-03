@@ -1,16 +1,14 @@
 """MetricTracker — built-in session instrumentation for the orchestrator."""
 
-import logging
 import time
 from typing import Optional
 
 from .models import UsageMetadataData
-
-logger = logging.getLogger(__name__)
+from .logger import SessionLogger
 
 
 class MetricTracker:
-    def __init__(self):
+    def __init__(self, logger: Optional[SessionLogger] = None):
         self.audio_packets_sent: int = 0
         self.audio_packets_received: int = 0
         self.user_turns: int = 0
@@ -24,6 +22,17 @@ class MetricTracker:
         self.ended_at: Optional[float] = None
         self._ttfb_samples: list[float] = []
         self._ttfb_start: Optional[float] = None
+        self._session_logger = logger
+
+    @property
+    def logger(self) -> SessionLogger:
+        if self._session_logger is None:
+            self._session_logger = SessionLogger()
+        return self._session_logger
+
+    @logger.setter
+    def logger(self, logger: SessionLogger) -> None:
+        self._session_logger = logger
 
     @property
     def total_duration_seconds(self) -> float:
@@ -39,7 +48,7 @@ class MetricTracker:
     def stop(self, log_summary: bool = False) -> None:
         self.ended_at = time.monotonic()
         if log_summary:
-            logger.info("[MetricTracker] Session summary: %s", self.to_str())
+            self.logger.info("[MetricTracker] Session summary", session_metrics=self.to_dict())
 
     def on_audio_sent(self) -> None:
         self.audio_packets_sent += 1

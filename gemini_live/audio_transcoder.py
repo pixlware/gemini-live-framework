@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -12,8 +11,6 @@ except ImportError:
     import audioop_lts as audioop  # type: ignore[no-redef]
 
 from .models import AudioFormat
-
-logger = logging.getLogger(__name__)
 
 PCM16_SAMPLE_WIDTH = 2
 MONO_CHANNELS = 1

@@ -103,6 +103,7 @@ def setup_logging(level: str | None = None) -> None:
     root.handlers.clear()
     root.setLevel(log_level)
     root.addHandler(handler)
+    logging.getLogger("websockets").setLevel(logging.INFO)
 
     if settings.CLOUD_LOGGING_ENABLED:
         global _gcp_log_client
@@ -135,14 +136,14 @@ def setup_telemetry() -> None:
 
     if mode == "local":
         activate(InstrumentationConfig(
-            project_id=project_id,
+            project_id=project_id or "",
             enable_gcp_export=False,
             enable_dashboard=False,
             enable_json_export=True,
         ))
     elif mode == "cloud":
         activate(InstrumentationConfig(
-            project_id=project_id,
+            project_id=project_id or "",
             enable_gcp_export=True,
             enable_dashboard=True,
             enable_json_export=True,

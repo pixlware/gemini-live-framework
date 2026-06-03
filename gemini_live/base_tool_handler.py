@@ -39,7 +39,6 @@ Example
 import asyncio
 import hashlib
 import json
-import logging
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -177,7 +176,7 @@ class BaseToolHandler:
         config = self._get_tool_config(tool_call.name)
         if config is None:
             self.logger.warning(
-                "Rejecting unregistered tool call",
+                f"[{type(self).__name__}] Rejecting unregistered tool call",
                 tool_name=tool_call.name,
                 tool_id=tool_call.id,
                 reason="not_registered_with_@tool",
@@ -215,7 +214,7 @@ class BaseToolHandler:
                 task.cancel()
                 cancelled += 1
         if cancelled:
-            self.logger.info("Cancelled pending tasks", cancelled_count=cancelled, requested_count=len(tool_ids))
+            self.logger.info(f"[{type(self).__name__}] Cancelled pending tasks", cancelled_count=cancelled, requested_count=len(tool_ids))
         await self.on_cancelled(tool_ids)
 
     async def cleanup(self) -> None:
@@ -241,12 +240,12 @@ class BaseToolHandler:
 
     async def _handle_blocking(self, tool_call: ToolCallData) -> None:
         tool_hash = self._compute_hash(tool_call.name, tool_call.args)
-        self.logger.info("Executing tool in blocking mode", tool_name=tool_call.name, tool_id=tool_call.id)
+        self.logger.info(f"[{type(self).__name__}] Executing tool in blocking mode", tool_name=tool_call.name, tool_id=tool_call.id)
         try:
             result = await self._execute(tool_call)
         except Exception as e:
             self.logger.error(
-                "Execution failed in blocking mode",
+                f"[{type(self).__name__}] Execution failed in blocking mode",
                 tool_name=tool_call.name,
                 tool_id=tool_call.id,
                 error=str(e),
@@ -255,7 +254,7 @@ class BaseToolHandler:
 
         if tool_call.id in self._cancelled_ids:
             self.logger.info(
-                "Suppressed blocking tool response due to cancellation",
+                f"[{type(self).__name__}] Suppressed blocking tool response due to cancellation",
                 tool_name=tool_call.name,
                 tool_id=tool_call.id,
                 reason="cancelled_after_completion",
@@ -277,7 +276,7 @@ class BaseToolHandler:
     async def _handle_non_blocking(
         self, tool_call: ToolCallData, config: ToolConfig
     ) -> None:
-        self.logger.info("Scheduling non-blocking tool execution", tool_name=tool_call.name, tool_id=tool_call.id)
+        self.logger.info(f"[{type(self).__name__}] Scheduling non-blocking tool execution", tool_name=tool_call.name, tool_id=tool_call.id)
 
 
         if self._send_tool_result:
@@ -302,12 +301,12 @@ class BaseToolHandler:
                 await asyncio.sleep(delay)
             result = await self._execute(tool_call)
         except asyncio.CancelledError:
-            self.logger.info("Cancelled non-blocking tool execution", tool_name=tool_call.name, tool_id=tool_call.id)
+            self.logger.info(f"[{type(self).__name__}] Cancelled non-blocking tool execution", tool_name=tool_call.name, tool_id=tool_call.id)
             self._finish_hash(tool_hash)
             return
         except Exception as e:
             self.logger.error(
-                "Execution failed in non-blocking mode",
+                f"[{type(self).__name__}] Execution failed in non-blocking mode",
                 tool_name=tool_call.name,
                 tool_id=tool_call.id,
                 error=str(e),
@@ -316,7 +315,7 @@ class BaseToolHandler:
 
         if tool_call.id in self._cancelled_ids:
             self.logger.info(
-                "Suppressed non-blocking tool response due to cancellation",
+                f"[{type(self).__name__}] Suppressed non-blocking tool response due to cancellation",
                 tool_name=tool_call.name,
                 tool_id=tool_call.id,
                 reason="cancelled_after_completion",
@@ -348,7 +347,7 @@ class BaseToolHandler:
 
         if tool_call.id in self._processed_tool_ids:
             self.logger.warning(
-                "Duplicate tool call skipped (ID duplicate)",
+                f"[{type(self).__name__}] Duplicate tool call skipped (ID duplicate)",
                 tool_name=tool_call.name,
                 tool_id=tool_call.id,
                 reason="same_id",
@@ -358,7 +357,7 @@ class BaseToolHandler:
         tool_hash = self._compute_hash(tool_call.name, tool_call.args)
         if tool_hash in self._in_flight_hashes and now < self._in_flight_hashes[tool_hash]:
             self.logger.warning(
-                "Duplicate tool call skipped (content duplicate)",
+                f"[{type(self).__name__}] Duplicate tool call skipped (content duplicate)",
                 tool_name=tool_call.name,
                 tool_id=tool_call.id,
                 reason="same_content",

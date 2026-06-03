@@ -1,7 +1,6 @@
 """Gemini Live API session — manages the WebSocket connection, audio streaming, and response parsing."""
 
 import json
-import logging
 from enum import Enum
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Iterable, List, Optional, AsyncContextManager, Callable, Awaitable
@@ -88,7 +87,7 @@ class GeminiLiveSession:
                 location=settings.GEMINI_LOCATION,
             )
 
-            self.logger.info("Connecting to Gemini Live API", model=self.model)
+            self.logger.info("[GeminiSession] Connecting to Gemini Live API", model=self.model)
 
             session_context = self.client.aio.live.connect(
                 model=self.model,
@@ -105,7 +104,7 @@ class GeminiLiveSession:
             if session_id:
                 self.logger.bind(gemini_session_id=session_id)
 
-            self.logger.info("Connected successfully to Gemini Live API")
+            self.logger.info("[GeminiSession] Connected successfully to Gemini Live API")
 
             if self.on_connect:
                 await self.on_connect(self.session)
@@ -117,7 +116,7 @@ class GeminiLiveSession:
 
         except Exception as e:
             self.logger.error(
-                "Connection to Gemini Live API failed", error=str(e)
+                "[GeminiSession] Connection to Gemini Live API failed", error=str(e)
             )
             self.is_connected = False
             return False
@@ -132,11 +131,11 @@ class GeminiLiveSession:
         INTERRUPTED / TURN_COMPLETE read+reset).
         """
         if not self.is_connected or not self.session:
-            self.logger.warning("Not connected to Gemini, skipping receive")
+            self.logger.warning("[GeminiSession] Not connected to Gemini, skipping receive")
             return
 
         try:
-            self.logger.info("Receive loop started")
+            self.logger.info("[GeminiSession] Receive loop started")
             self._audio_chunks_this_turn = 0
 
             while self.is_connected:
@@ -146,10 +145,10 @@ class GeminiLiveSession:
                     if not self.is_connected:
                         break
 
-            self.logger.info("Receive loop ended")
+            self.logger.info("[GeminiSession] Receive loop ended")
 
         except Exception as e:
-            self.logger.error("Receive loop failed", error=str(e))
+            self.logger.error("[GeminiSession] Receive loop failed", error=str(e))
 
     def _parse_response(self, response: types.LiveServerMessage) -> Iterable[GeminiLiveResponse]:
         """Fan out one SDK response into zero or more ``GeminiLiveResponse`` events."""
@@ -180,7 +179,7 @@ class GeminiLiveSession:
     def _parse_server_content(self, sc: types.LiveServerContent) -> Iterable[GeminiLiveResponse]:
         if sc.interrupted:
             interrupted_chunks = self._audio_chunks_this_turn
-            self.logger.info("Model playback interrupted", interrupted_chunks=interrupted_chunks)
+            self.logger.info("[GeminiSession] Model playback interrupted", interrupted_chunks=interrupted_chunks)
             self._audio_chunks_this_turn = 0
             yield GeminiLiveResponse(
                 type=GeminiLiveResponseType.INTERRUPTED,
@@ -209,7 +208,7 @@ class GeminiLiveSession:
 
         if sc.turn_complete:
             completed_chunks = self._audio_chunks_this_turn
-            self.logger.info("Model turn complete", completed_chunks=completed_chunks)
+            self.logger.info("[GeminiSession] Model turn complete", completed_chunks=completed_chunks)
             self._audio_chunks_this_turn = 0
             yield GeminiLiveResponse(
                 type=GeminiLiveResponseType.TURN_COMPLETE,
@@ -223,9 +222,9 @@ class GeminiLiveSession:
             except (TypeError, AttributeError):
                 args_dict = {}
             if not fc.id:
-                self.logger.error("Dropping FunctionCall with no id", tool_name=fc.name, args=args_dict)
+                self.logger.error("[GeminiSession] Dropping FunctionCall with no id", tool_name=fc.name, args=args_dict)
                 continue
-            self.logger.info("Tool call received from Gemini", tool_name=fc.name, tool_call_id=fc.id, args=args_dict)
+            self.logger.info("[GeminiSession] Tool call received from Gemini", tool_name=fc.name, tool_call_id=fc.id, args=args_dict)
             yield GeminiLiveResponse(
                 type=GeminiLiveResponseType.TOOL_CALL,
                 data=ToolCallData(id=fc.id, name=fc.name or "", args=args_dict),
@@ -235,7 +234,7 @@ class GeminiLiveSession:
         cancelled_ids: list[str] = []
         if hasattr(cancellation, "ids") and cancellation.ids:
             cancelled_ids = list(cancellation.ids)
-        self.logger.info("Tool call cancellation received", cancelled_ids=cancelled_ids)
+        self.logger.info("[GeminiSession] Tool call cancellation received", cancelled_ids=cancelled_ids)
         yield GeminiLiveResponse(
             type=GeminiLiveResponseType.TOOL_CALL_CANCELLATION,
             data=ToolCallCancellationData(ids=cancelled_ids),
@@ -263,7 +262,7 @@ class GeminiLiveSession:
             tool_use_prompt_token_count=usage.tool_use_prompt_token_count or 0,
         )
         self.logger.info(
-            "Usage metadata received",
+            "[GeminiSession] Usage metadata received",
             prompt_tokens=data.prompt_token_count,
             response_tokens=data.response_token_count,
             total_tokens=data.total_token_count,
@@ -278,7 +277,6 @@ class GeminiLiveSession:
     async def send_audio(self, audio_data: bytes) -> None:
         """Send PCM16 16 kHz audio to Gemini."""
         if not self.is_connected or not self.session:
-            self.logger.debug("Not connected to Gemini Live, skipping send_audio")
             return
 
         try:
@@ -286,7 +284,7 @@ class GeminiLiveSession:
                 audio=types.Blob(data=audio_data, mime_type="audio/pcm;rate=16000")
             )
         except Exception as e:
-            self.logger.error("Send audio failed", error=str(e))
+            self.logger.error("[GeminiSession] Send audio failed", error=str(e))
 
     async def send_tool_response(
         self, function_id: str, function_name: str, response: Any
@@ -297,7 +295,7 @@ class GeminiLiveSession:
         so this does NOT trigger an interruption.
         """
         if not self.session or not self.is_connected:
-            self.logger.error("Not connected, skipping send_tool_response", tool_name=function_name, tool_call_id=function_id)
+            self.logger.error("[GeminiSession] Not connected, skipping send_tool_response", tool_name=function_name, tool_call_id=function_id)
             return
 
         result_payload = response if isinstance(response, dict) else {"result": response}
@@ -309,7 +307,7 @@ class GeminiLiveSession:
         await self.session.send_tool_response(
             function_responses=[func_response]
         )
-        self.logger.info("FunctionResponse sent back to Gemini", tool_name=function_name, tool_call_id=function_id)
+        self.logger.info("[GeminiSession] FunctionResponse sent back to Gemini", tool_name=function_name, tool_call_id=function_id)
 
     async def send_tool_result_as_context(
         self, function_id: str, function_name: str, response: Any
@@ -322,7 +320,7 @@ class GeminiLiveSession:
         client content so the model speaks about it naturally.
         """
         if not self.session or not self.is_connected:
-            self.logger.error("Not connected, skipping send_tool_result_as_context", tool_name=function_name, tool_call_id=function_id)
+            self.logger.error("[GeminiSession] Not connected, skipping send_tool_result_as_context", tool_name=function_name, tool_call_id=function_id)
             return
 
         result_text = (
@@ -336,7 +334,7 @@ class GeminiLiveSession:
             ),
             turn_complete=True,
         )
-        self.logger.info("Context result sent back to Gemini", tool_name=function_name, tool_call_id=function_id)
+        self.logger.info("[GeminiSession] Context result sent back to Gemini", tool_name=function_name, tool_call_id=function_id)
 
     async def send_interim_tool_response(
         self, function_id: str, function_name: str, interim_message: str
@@ -345,7 +343,7 @@ class GeminiLiveSession:
         for speech while the tool executes in the background.
         """
         if not self.session or not self.is_connected:
-            self.logger.error("Not connected, skipping send_interim_tool_response", tool_name=function_name, tool_call_id=function_id)
+            self.logger.error("[GeminiSession] Not connected, skipping send_interim_tool_response", tool_name=function_name, tool_call_id=function_id)
             return
 
         try:
@@ -357,10 +355,10 @@ class GeminiLiveSession:
             await self.session.send_tool_response(
                 function_responses=[interim]
             )
-            self.logger.info("Interim processing response sent to Gemini", tool_name=function_name, tool_call_id=function_id)
+            self.logger.info("[GeminiSession] Interim processing response sent to Gemini", tool_name=function_name, tool_call_id=function_id)
         except Exception as e:
             self.logger.error(
-                "Interim response failed to send",
+                "[GeminiSession] Interim response failed to send",
                 tool_name=function_name,
                 tool_call_id=function_id,
                 error=str(e),
@@ -373,7 +371,7 @@ class GeminiLiveSession:
         to prevent the text turn from colliding with the audio stream.
         """
         if not self.is_connected or not self.session:
-            self.logger.debug("Not connected, skipping send_text")
+            self.logger.debug("[GeminiSession] Not connected, skipping send_text")
             return
 
         try:
@@ -385,12 +383,12 @@ class GeminiLiveSession:
                 turn_complete=turn_complete,
             )
         except Exception as e:
-            self.logger.error("Send text failed", error=str(e))
+            self.logger.error("[GeminiSession] Send text failed", error=str(e))
 
     async def send_system_text(self, text: str) -> None:
         """Send system text input to Gemini."""
         if not self.is_connected or not self.session:
-            self.logger.error("Not connected, skipping send_system_text")
+            self.logger.error("[GeminiSession] Not connected, skipping send_system_text")
             return
         try:
             await self.session.send_client_content(
@@ -401,7 +399,7 @@ class GeminiLiveSession:
                 turn_complete=False,
             )
         except Exception as e:
-            self.logger.error("Send system text failed", error=str(e))
+            self.logger.error("[GeminiSession] Send system text failed", error=str(e))
 
     async def disconnect(self):
         """Disconnect from Gemini Live API and clean up resources."""
@@ -409,9 +407,9 @@ class GeminiLiveSession:
             if self.session_context:
                 try:
                     await self.session_context.__aexit__(None, None, None)
-                    self.logger.info("Disconnected from Gemini Live API")
+                    self.logger.info("[GeminiSession] Disconnected from Gemini Live API")
                 except Exception as e:
-                    self.logger.error("Disconnect failed", error=str(e))
+                    self.logger.error("[GeminiSession] Disconnect failed", error=str(e))
         finally:
             self.session = None
             self.session_context = None

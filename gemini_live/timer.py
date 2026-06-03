@@ -17,11 +17,10 @@ exhausted across restarts.
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from typing import Awaitable, Callable, Optional
 
-logger = logging.getLogger(__name__)
+from .logger import SessionLogger
 
 
 class Timer:
@@ -29,19 +28,33 @@ class Timer:
 
     def __init__(
         self,
+        name: str,
         triggers: list[int],
         on_trigger: Callable[[int], Awaitable[None]],
         repeat_triggers: bool = True,
+        logger: Optional[SessionLogger] = None,
     ):
+        self.name = name
         self._triggers = sorted(triggers)
         self._on_trigger = on_trigger
         self._repeat_triggers = repeat_triggers
         self._fired_triggers: set[int] = set()
         self._task: Optional[asyncio.Task] = None
-        self._run_start: Optional[float] = None
+        self._run_start: float = 0.0
         self._elapsed_at_stop: float = 0.0
         self._trigger_index: int = 0
         self.is_running: bool = False
+        self._session_logger = logger
+
+    @property
+    def logger(self) -> SessionLogger:
+        if self._session_logger is None:
+            self._session_logger = SessionLogger()
+        return self._session_logger
+
+    @logger.setter
+    def logger(self, logger: SessionLogger) -> None:
+        self._session_logger = logger
 
     def start(self) -> None:
         """Begin from zero or resume from a paused state.
@@ -57,10 +70,10 @@ class Timer:
             self._run_start = time.monotonic()
         self.is_running = True
         self._task = asyncio.create_task(self._run())
-        logger.debug(
-            "[Timer] Started (trigger_index=%d, elapsed=%.1fs)",
-            self._trigger_index,
-            self._elapsed_at_stop,
+        self.logger.debug(
+            f"[{self.name} Timer] Started",
+            trigger_index=self._trigger_index,
+            elapsed=self._elapsed_at_stop,
         )
 
     def stop(self) -> None:
@@ -70,10 +83,10 @@ class Timer:
         self._elapsed_at_stop = time.monotonic() - self._run_start
         self._cancel_task()
         self.is_running = False
-        logger.debug(
-            "[Timer] Stopped (elapsed=%.1fs, trigger_index=%d)",
-            self._elapsed_at_stop,
-            self._trigger_index,
+        self.logger.debug(
+            f"[{self.name} Timer] Stopped",
+            elapsed=self._elapsed_at_stop,
+            trigger_index=self._trigger_index,
         )
 
     def reset(self) -> None:
@@ -84,11 +97,11 @@ class Timer:
         full reset is needed.
         """
         self._cancel_task()
-        self._run_start = None
+        self._run_start = 0.0
         self._elapsed_at_stop = 0.0
         self._trigger_index = 0
         self.is_running = False
-        logger.debug("[Timer] Reset")
+        self.logger.debug(f"[{self.name} Timer] Reset")
 
     async def _run(self) -> None:
         my_task = asyncio.current_task()
@@ -103,13 +116,13 @@ class Timer:
                     await asyncio.sleep(wait)
                 if not self.is_running or self._task is not my_task:
                     return
-                logger.info("[Timer] Trigger fired at %ds", target)
+                self.logger.debug(f"[{self.name} Timer] Trigger fired at {target}s")
                 try:
                     await self._on_trigger(target)
-                except Exception:
-                    logger.exception(
-                        "[Timer] on_trigger callback raised at t=%ds; continuing",
-                        target,
+                except Exception as e:
+                    self.logger.error(
+                        f"[{self.name} Timer] on_trigger callback raised at t={target}s; continuing",
+                        error=str(e),
                     )
                 self._fired_triggers.add(target)
                 self._trigger_index += 1

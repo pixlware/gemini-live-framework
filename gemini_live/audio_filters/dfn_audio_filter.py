@@ -11,7 +11,6 @@ All resampling is done in float32 to avoid quantisation noise from int16 round-t
 
 from __future__ import annotations
 
-import logging
 from typing import Optional
 
 import numpy as np
@@ -19,8 +18,7 @@ import numpy as np
 from config import settings
 
 from .base_audio_filter import BaseAudioFilter
-
-logger = logging.getLogger(__name__)
+from ..logger import SessionLogger
 
 try:
     if settings.DFN_THREAD_LIMIT > 0:
@@ -50,6 +48,9 @@ try:
     _HAS_DFN = True
 except ImportError:
     _HAS_DFN = False
+    # Bind to None to satisfy Pyright
+    DeepFilterNetStreamingONNX = None
+    soxr = None
 
 
 class DeepFilterNetAudioFilter(BaseAudioFilter):
@@ -63,6 +64,7 @@ class DeepFilterNetAudioFilter(BaseAudioFilter):
         self,
         atten_lim: float = 15.0,
         resampling_quality: str = "HQ",
+        logger: Optional[SessionLogger] = None,
     ) -> None:
         """Create the filter and streaming resamplers.
 
@@ -77,9 +79,10 @@ class DeepFilterNetAudioFilter(BaseAudioFilter):
                 ``"VHQ"`` trades more CPU for finer resampling, which suits many
                 **web or app** uplinks.
         """
-        if not _HAS_DFN:
+        self._session_logger = logger
+        if not _HAS_DFN or not DeepFilterNetStreamingONNX or not soxr:
             self.enabled = False
-            logger.warning(
+            self.logger.warning(
                 "[DeepFilterNetAudioFilter] Missing 'dfnstream-py' dependency. "
                 "Filter will operate in BYPASS mode."
             )
@@ -97,15 +100,23 @@ class DeepFilterNetAudioFilter(BaseAudioFilter):
         )
         self.input_buffer = np.array([], dtype=np.float32)
 
-        logger.info(
-            "[DeepFilterNetAudioFilter] Initialized (ONNX, atten_lim=%.1f, resampling_quality=%s)",
-            self.atten_lim,
-            resampling_quality,
+        self.logger.info(
+            f"[DeepFilterNetAudioFilter] Initialized (ONNX, atten_lim={self.atten_lim:.1f}, resampling_quality={resampling_quality})"
         )
 
-    async def filter(self, audio: bytes) -> Optional[bytes]:
+    @property
+    def logger(self) -> SessionLogger:
+        if self._session_logger is None:
+            self._session_logger = SessionLogger()
+        return self._session_logger
+
+    @logger.setter
+    def logger(self, logger: SessionLogger) -> None:
+        self._session_logger = logger
+
+    async def filter(self, data: bytes) -> Optional[bytes]:
         # STAGE 1: int16 -> float32 -> upsample 16kHz -> 48kHz
-        audio_int16 = np.frombuffer(audio, dtype=np.int16)
+        audio_int16 = np.frombuffer(data, dtype=np.int16)
         audio_f32_16k = audio_int16.astype(np.float32) / 32768.0
         audio_float32 = self.upsampler.resample_chunk(audio_f32_16k)
 

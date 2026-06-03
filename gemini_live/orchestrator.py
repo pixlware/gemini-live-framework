@@ -1,7 +1,6 @@
 """Orchestrator — wires transport, Gemini session, and tool handler into concurrent pipelines."""
 
 import asyncio
-import logging
 from dataclasses import dataclass
 from typing import Any, Optional, Callable, Awaitable
 
@@ -32,8 +31,6 @@ from .audio_recorder import AudioRecorder
 from .model_vad import ModelVAD
 from .turn_tracker import ConversationState, TurnTracker
 
-logger = logging.getLogger(__name__)
-
 
 @dataclass
 class OrchestratorCallbacks:
@@ -54,6 +51,18 @@ class OrchestratorCallbacks:
     on_usage_metadata: Optional[
         Callable[[UsageMetadataData], Awaitable[None]]
     ] = None
+
+
+class OrchestratorActions:
+    """Unified actions manager for controlling orchestrator state and triggering transitions."""
+
+    def __init__(self, turn_tracker: TurnTracker):
+        self._turn_tracker = turn_tracker
+
+    async def trigger_bot_timeout(self) -> None:
+        """Force transition the turn tracker to WAITING_FOR_USER after a bot idle timeout."""
+        await self._turn_tracker.bot_timeout()
+
 
 
 class Orchestrator:
@@ -85,9 +94,14 @@ class Orchestrator:
             self.tool_handler.set_send_tool_result(self._send_tool_result)
 
         self.audio_recorder = audio_recorder
+        if self.audio_recorder:
+            self.audio_recorder.logger = self.logger
+
         self.transcription = transcription
+        if self.transcription:
+            self.transcription.logger = self.logger
         self.callbacks = callbacks or OrchestratorCallbacks()
-        self.metric_tracker = MetricTracker()
+        self.metric_tracker = MetricTracker(logger=self.logger)
         self._model_vad = ModelVAD(
             on_event=self._on_model_voice_activity,
         )
@@ -95,7 +109,9 @@ class Orchestrator:
             user_idle_timer=user_idle_timer,
             model_idle_timer=model_idle_timer,
             on_state_change=self._on_turn_state_change,
+            logger=self.logger,
         )
+        self.actions = OrchestratorActions(self._turn_tracker)
         self._tool_dispatch_tasks: set[asyncio.Task] = set()
         self.is_running: bool = False
 
@@ -124,7 +140,7 @@ class Orchestrator:
         Returns False if Gemini connection fails.
         """
         if self.is_running:
-            self.logger.warning("start() called while already running; ignoring")
+            self.logger.warning("[Orchestrator] start() called while already running; ignoring")
             return True
         self.is_running = True
 
@@ -210,7 +226,7 @@ class Orchestrator:
             return
         exc = task.exception()
         if exc is not None:
-            self.logger.error("Tool dispatch task crashed", error=str(exc))
+            self.logger.error("[Orchestrator] Tool dispatch task crashed", error=str(exc))
 
     async def _handle_transport_messages(self):
         """Pipeline: transport -> Gemini."""
@@ -226,7 +242,7 @@ class Orchestrator:
                 case EventData() as event:
                     if self.callbacks.on_event:
                         await self.callbacks.on_event(event)
-        self.logger.info("Transport loop ended")
+        self.logger.info("[Orchestrator] Transport loop ended")
 
     async def _handle_gemini_responses(self):
         """Pipeline: Gemini -> transport (+ tool handler).
@@ -248,8 +264,8 @@ class Orchestrator:
                 if handler is not None:
                     await handler(response.data)
         except RuntimeError as e:
-            self.logger.info("Transport closed mid-response; ending Gemini loop", error=str(e))
-        self.logger.info("Gemini response loop ended")
+            self.logger.info("[Orchestrator] Transport closed mid-response; ending Gemini loop", error=str(e))
+        self.logger.info("[Orchestrator] Gemini response loop ended")
 
     async def _on_audio(self, data: AudioData) -> None:
         self.metric_tracker.on_ttfb_end()
@@ -303,7 +319,7 @@ class Orchestrator:
 
     async def _on_user_voice_activity(self, data: VoiceActivityData) -> None:
         self.logger.info(
-            "User voice activity state change",
+            f"[Orchestrator] User voice activity state change: {data.voice_activity_type.value}",
             role=data.role.value,
             activity=data.voice_activity_type.value,
         )
@@ -330,7 +346,7 @@ class Orchestrator:
         if self.tool_handler:
             self._dispatch_tool_call(data)
         else:
-            self.logger.warning("Tool call received but no handler registered")
+            self.logger.warning("[Orchestrator] Tool call received but no handler registered")
 
     async def _on_usage_metadata(self, data: UsageMetadataData) -> None:
         self.metric_tracker.on_usage_metadata(data)
@@ -341,7 +357,7 @@ class Orchestrator:
         if self.tool_handler:
             await self.tool_handler.handle_cancellation(data.ids)
         else:
-            self.logger.warning("Tool cancellation received but no handler registered")
+            self.logger.warning("[Orchestrator] Tool cancellation received but no handler registered")
 
     async def _send_tool_result(self, result: ToolHandlerResult) -> None:
         """Forward a ``ToolHandlerResult`` to Gemini.
@@ -357,7 +373,7 @@ class Orchestrator:
         if self.tool_handler and result.tool_id in self.tool_handler._cancelled_ids:
             self.tool_handler._cancelled_ids.pop(result.tool_id, None)
             self.logger.info(
-                "Suppressed tool result send due to tool cancellation",
+                "[Orchestrator] Suppressed tool result send due to tool cancellation",
                 action=result.action.value,
                 tool_name=result.tool_name,
                 tool_id=result.tool_id,
@@ -381,7 +397,7 @@ class Orchestrator:
                     )
         except Exception as e:
             self.logger.error(
-                "Failed to forward tool result",
+                "[Orchestrator] Failed to forward tool result",
                 error=str(e),
                 tool_name=result.tool_name,
                 tool_id=result.tool_id,
@@ -409,10 +425,10 @@ class Orchestrator:
             for task in done:
                 exc = task.exception() if not task.cancelled() else None
                 if exc:
-                    self.logger.error("Pipeline failed", error=str(exc))
+                    self.logger.error("[Orchestrator] Pipeline failed", error=str(exc))
         except Exception as e:
             self.logger.error(
-                "Processing loop failed", error=str(e),
+                "[Orchestrator] Processing loop failed", error=str(e),
             )
             pending = {t for t in tasks if not t.done()}
         finally:
@@ -430,7 +446,7 @@ class Orchestrator:
     async def _on_model_voice_activity(self, data: VoiceActivityData) -> None:
         """Internal handler for synthesized model voice activity events."""
         self.logger.info(
-            "Model voice activity state change",
+            f"[Orchestrator] Model voice activity state change: {data.voice_activity_type.value}",
             role=data.role.value,
             activity=data.voice_activity_type.value,
         )

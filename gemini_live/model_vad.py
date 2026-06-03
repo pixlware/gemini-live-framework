@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from typing import Awaitable, Callable, Optional
 
 from google.genai import types
 
 from .models import Role, VoiceActivityData
-
-logger = logging.getLogger(__name__)
 
 BYTES_PER_SAMPLE = 2  # PCM16
 MODEL_VAD_END_DELAY = 0.3
