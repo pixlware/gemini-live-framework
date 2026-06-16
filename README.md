@@ -109,13 +109,13 @@ Send 16 kHz PCM16 mono audio as binary WebSocket frames; receive 24 kHz PCM16 mo
 
 **Tool calling** — Blocking and non-blocking execution via `BaseToolHandler` and the `@tool` decorator, with built-in deduplication, cancellation, and queued results.
 
-**Voice activity & turn tracking** — User VAD from Gemini, synthesized model VAD via `ModelVAD`, and a `TurnTracker` / `ConversationState` state machine that drives user- and model-idle timers.
+**Voice activity & turn tracking** — User VAD from Gemini (server-side) or local Silero VAD, synthesized model VAD via `ModelVAD`, and a `TurnTracker` / `ConversationState` state machine that drives user- and model-idle timers.
 
 ### Audio pipeline
 
 **Input filtering** — Pluggable `BaseAudioFilter` with exception safety and graceful disabling. Ships with `DeepFilterNetAudioFilter`, an ONNX streaming denoiser (graceful bypass when `dfnstream-py` is missing).
 
-**Call recording** — Optional wall-clock–aligned mixed-mono WAV output via `AudioRecorder`. Opt-in, buffers in RAM.
+**Call recording** — Optional wall-clock–aligned stereo WAV output via `AudioRecorder` (left = user, right = model). Saves locally or uploads to Google Cloud Storage. Opt-in, buffers in RAM.
 
 ### Observability
 
@@ -296,14 +296,19 @@ orchestrator = Orchestrator(
 <details>
 <summary><b>Call recording</b></summary>
 
-`AudioRecorder` writes a wall-clock–aligned mixed-mono WAV file with user and model audio silence-padded for alignment. Both tracks are resampled to 24 kHz and mixed down (vectorized via numpy).
+`AudioRecorder` writes a wall-clock–aligned stereo WAV file with user audio on the left channel and model audio on the right, silence-padded for alignment. Both tracks are resampled to 16 kHz and interleaved (vectorized via numpy).
 
 Recording is opt-in: the `Orchestrator` defaults `audio_recorder=None`, and whether to turn it on is an application-level decision (e.g. your own env flag). The recorder buffers the entire call in RAM until `stop()`, so it's intended for dev / QA, not long-running production calls.
 
 ```python
 from gemini_live.audio_recorder import AudioRecorder
 
-recorder = AudioRecorder()  # defaults to ./recordings/<uuid>.wav
+# Local (defaults to ./.recordings/<uuid>.wav)
+recorder = AudioRecorder()
+
+# Or upload to Google Cloud Storage on stop()
+recorder = AudioRecorder(storage_type="gcs", bucket_name="my-bucket")  # falls back to GCS_BUCKET_NAME
+
 orchestrator = Orchestrator(transport=t, gemini_session=s, audio_recorder=recorder)
 ```
 
@@ -352,7 +357,7 @@ Convenience shortcuts:
 |---|---|
 | `voice_name`, `language_code` | Builds `speech_config` (do not also pass `speech_config`) |
 | `function_declarations` | Appends custom tools alongside optional built-ins |
-| `vad_enabled` | Enables automatic activity detection with tuned thresholds |
+| `vad_type` | `"gemini"` (server-side automatic activity detection with tuned thresholds) or `"silero"` (local VAD; see below) |
 | `enable_google_search` | Adds the built-in Google Search tool |
 
 ```python
@@ -364,6 +369,28 @@ config = build_gemini_live_config(
     enable_google_search=True,
 )
 ```
+
+</details>
+
+<details>
+<summary><b>Voice activity detection (Gemini vs Silero)</b></summary>
+
+The framework supports two VAD strategies, selected with `vad_type`:
+
+- **`"gemini"`** (default) — Gemini's server-side automatic activity detection. Audio streams continuously and the server decides when speech starts and ends.
+- **`"silero"`** — Local VAD using [Silero](https://github.com/snakers4/silero-vad) via `sherpa-onnx`. Audio is gated client-side: the bundled `models/silero_vad.onnx` detects speech, forwards only gated audio with manual `activity_start` / `activity_end` signals, and emits `voice_activity` events immediately (no network round-trip) so the orchestrator reacts to speech boundaries without waiting on Gemini.
+
+Pass `vad_type` to both the config builder and the session so they agree:
+
+```python
+config = build_gemini_live_config(
+    system_instruction="You are a helpful voice assistant.",
+    vad_type="silero",
+)
+session = GeminiLiveSession(config=config, vad_type="silero")
+```
+
+`"silero"` mode requires the `sherpa_onnx` dependency (in `requirements.txt`).
 
 </details>
 

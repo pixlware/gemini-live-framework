@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.0 (2026-06-16)
+
+### Added
+- Local Silero VAD via `sherpa-onnx` (`SileroVad`, bundled `models/silero_vad.onnx`). New `vad_type` (`"gemini"` | `"silero"`) on `build_gemini_live_config()` and `GeminiLiveSession`; in `"silero"` mode audio is gated client-side and manual activity signals plus instant `voice_activity` events are emitted.
+- GCS storage for `AudioRecorder` via `storage_type="gcs"`, `bucket_name`, and the `GCS_BUCKET_NAME` setting; custom `filename` parameter.
+
+### Changed
+- `build_gemini_live_config(vad_enabled=...)` replaced by `vad_type="gemini"|"silero"`.
+- `GeminiLiveSession` now drains responses through a background task and queue with a public `receive()` consumer; `disconnect()` cancels the drain task.
+- `Orchestrator.start()` races the Gemini connect against the transport and aborts startup if the client disconnects first; recording finalization is fire-and-forget.
+- `AudioRecorder` now writes a stereo WAV (left = user, right = model) at 16 kHz instead of mixed-mono at 24 kHz.
+
 ## 0.2.0 (2026-06-03)
 
 ### Added
