@@ -148,8 +148,27 @@ class Orchestrator:
             await self.transport.start()
 
             transport_task = asyncio.create_task(self._handle_transport_messages())
+            connect_task = asyncio.create_task(self.gemini_session.connect())
+            done, _ = await asyncio.wait(
+                {connect_task, transport_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
 
-            connected = await self.gemini_session.connect()
+            if connect_task not in done:
+                self.logger.info(
+                    "[Orchestrator] Client disconnected before Gemini connected; aborting startup"
+                )
+                connect_task.cancel()
+                try:
+                    await connect_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                await self.gemini_session.disconnect()
+                await self.transport.stop()
+                self.is_running = False
+                return False
+
+            connected = connect_task.result()
             if not connected:
                 transport_task.cancel()
                 try:
@@ -202,7 +221,7 @@ class Orchestrator:
         # Phase 4 — finalize recording. AudioRecorder.stop() never raises; it
         # logs its own errors and discards audio on failure.
         if self.audio_recorder:
-            await asyncio.get_running_loop().run_in_executor(
+            asyncio.get_running_loop().run_in_executor(
                 None, self.audio_recorder.stop
             )
 
