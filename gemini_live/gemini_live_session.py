@@ -64,6 +64,7 @@ class GeminiLiveSession:
         initial_text: Optional[str] = None,
         on_connect: Optional[Callable[[AsyncSession], Awaitable[None]]] = None,
         vad_type: str = "gemini",
+        silero_vad: Optional[SileroVad] = None,
     ):
         self.config = config
         self.model = model or settings.GEMINI_LIVE_MODEL
@@ -79,9 +80,17 @@ class GeminiLiveSession:
         self._session_logger: Optional[SessionLogger] = None
 
         # Client-side VAD (eager, no lazy load) — only when explicitly selected.
-        self._silero_vad: Optional[SileroVad] = (
-            SileroVad() if vad_type == "silero" else None
-        )
+        # Callers may inject a pre-configured detector to tune thresholds;
+        # otherwise fall back to the default SileroVad().
+        if vad_type == "silero":
+            self._silero_vad: Optional[SileroVad] = silero_vad or SileroVad()
+        else:
+            if silero_vad is not None:
+                self.logger.warning(
+                    "[GeminiSession] silero_vad provided but vad_type != 'silero'; "
+                    "the injected detector is ignored."
+                )
+            self._silero_vad = None
 
         # Unbounded so put_nowait never blocks or raises QueueFull. Both the
         # background network drain and the Silero send path feed this queue;
