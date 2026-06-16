@@ -118,30 +118,3 @@ class MetricTracker:
             "ttfb_samples": [round(s, 4) for s in self._ttfb_samples],
             "total_usage": self.total_usage.model_dump(),
         }
-
-    def to_str(self) -> str:
-        """Single-line logfmt-style summary for cloud-log-friendly logging.
-
-        Multi-line JSON breaks GCP/Cloud-Logging grouping; this keeps the
-        whole session summary on one line so it lands as a single entry.
-        """
-        u = self.total_usage
-        parts = (
-            f"duration={self.total_duration_seconds:.2f}s "
-            f"audio_sent={self.audio_packets_sent} "
-            f"audio_recv={self.audio_packets_received} "
-            f"user_turns={self.user_turns} "
-            f"model_turns={self.model_turns} "
-            f"interruptions={self.interruptions} "
-            f"tool_calls={self.tool_calls} "
-            f"user_words={self.user_word_count} "
-            f"model_words={self.model_word_count} "
-            f"prompt_tokens={u.prompt_token_count} "
-            f"response_tokens={u.response_token_count} "
-            f"total_tokens={u.total_token_count} "
-            f"thoughts_tokens={u.thoughts_token_count} "
-            f"tool_use_tokens={u.tool_use_prompt_token_count}"
-        )
-        if self.avg_ttfb is not None:
-            parts += f" avg_ttfb={self.avg_ttfb:.4f}s"
-        return parts
