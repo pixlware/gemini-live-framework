@@ -18,6 +18,7 @@ numpy==2.2.6
 audioop-lts==0.2.2; python_version >= "3.13"
 dfnstream-py==0.2.1
 soxr==1.0.0
+sherpa_onnx==1.13.3
 
 # Google Cloud & AI
 google-genai==1.73.1
