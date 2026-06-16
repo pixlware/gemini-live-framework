@@ -390,6 +390,21 @@ config = build_gemini_live_config(
 session = GeminiLiveSession(config=config, vad_type="silero")
 ```
 
+To tune the detector, inject a pre-configured `SileroVad` instead of relying on the defaults:
+
+```python
+from gemini_live.silero_vad import SileroVad
+
+config = build_gemini_live_config(vad_type="silero")
+session = GeminiLiveSession(
+    config=config,
+    vad_type="silero",
+    silero_vad=SileroVad(silence_duration_ms=400, threshold=0.6),
+)
+```
+
+In `"silero"` mode, `SileroVad`'s `silence_duration_ms` is the per-use-case turn-timing knob (Gemini's server VAD is disabled), mirroring `silence_duration_ms` on the `"gemini"` path. Omitting `silero_vad` keeps the default detector.
+
 `"silero"` mode requires the `sherpa_onnx` dependency (in `requirements.txt`).
 
 </details>
