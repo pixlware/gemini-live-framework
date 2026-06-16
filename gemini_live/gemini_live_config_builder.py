@@ -7,7 +7,7 @@ so the builder never needs updating when Google adds new fields.
 Sub-configs (``speech_config``, ``realtime_input_config``,
 ``input_audio_transcription``, ``output_audio_transcription``) replace
 the framework defaults wholesale when passed. Use the shortcut kwargs
-(``voice_name``, ``language_code``, ``vad_enabled``) OR a full sub-config,
+(``voice_name``, ``language_code``, ``vad_type``) OR a full sub-config,
 not both — mixing them emits a warning and the sub-config wins.
 """
 
@@ -25,7 +25,7 @@ def build_gemini_live_config(
     voice_name: str = "Zephyr",
     language_code: Optional[str] = None,
     function_declarations: Optional[list[types.FunctionDeclaration]] = None,
-    vad_enabled: bool = True,
+    vad_type: str = "gemini",
     enable_google_search: bool = False,
     # ── Everything else forwards to LiveConnectConfig as-is ──
     **kwargs,
@@ -33,7 +33,7 @@ def build_gemini_live_config(
     """Build a LiveConnectConfig with battle-tested defaults.
 
     Convenience shortcuts (``voice_name``, ``language_code``,
-    ``vad_enabled``) handle the deeply nested structures so callers
+    ``vad_type``) handle the deeply nested structures so callers
     don't have to. Any sub-config passed via ``**kwargs`` replaces the
     framework default wholesale — the shortcuts do not merge into it.
     Mixing a shortcut with its overlapping sub-config emits a warning;
@@ -42,6 +42,7 @@ def build_gemini_live_config(
     Returns a ``types.LiveConnectConfig`` that callers can further
     mutate before handing to ``GeminiLiveSession``.
     """
+    vad_enabled = (vad_type == "gemini")
 
     # ── speech_config ──
     if "speech_config" in kwargs and (voice_name != "Zephyr" or language_code is not None):
@@ -75,17 +76,18 @@ def build_gemini_live_config(
     kwargs.setdefault("output_audio_transcription", default_transcription)
 
     # ── VAD / realtime input ──
-    if "realtime_input_config" in kwargs and vad_enabled is not True:
+    if "realtime_input_config" in kwargs and not vad_enabled:
         logger.warning(
-            "[GeminiLiveConfigBuilder] realtime_input_config= provided alongside vad_enabled=False; "
-            "realtime_input_config wins and vad_enabled is ignored."
+            "[GeminiLiveConfigBuilder] realtime_input_config= provided alongside vad_type=%s; "
+            "realtime_input_config wins.",
+            vad_type
         )
     if vad_enabled:
         default_vad = types.AutomaticActivityDetection(
             disabled=False,
             start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
             end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
-            prefix_padding_ms=200,
+            prefix_padding_ms=300,
             silence_duration_ms=600,
         )
     else:

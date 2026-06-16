@@ -1,5 +1,6 @@
 """Gemini Live API session — manages the WebSocket connection, audio streaming, and response parsing."""
 
+import asyncio
 import json
 from enum import Enum
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from google import genai
 from google.genai import types
 from google.genai.live import AsyncSession
 from config import settings
+
+from .silero_vad import SileroVad
 
 from .models import (
     AudioFormat,
@@ -45,6 +48,11 @@ class GeminiLiveResponse:
     data: Optional[Data] = None
 
 
+# Marker pushed onto the response queue when the background receive task ends,
+# so the public receive() consumer can exit cleanly instead of hanging on get().
+_SENTINEL = object()
+
+
 class GeminiLiveSession:
     """Manages a Gemini Live API session for real-time conversation."""
 
@@ -55,11 +63,13 @@ class GeminiLiveSession:
         model: Optional[str] = None,
         initial_text: Optional[str] = None,
         on_connect: Optional[Callable[[AsyncSession], Awaitable[None]]] = None,
+        vad_type: str = "gemini",
     ):
         self.config = config
         self.model = model or settings.GEMINI_LIVE_MODEL
         self.initial_text = initial_text
         self.on_connect = on_connect
+        self.vad_type = vad_type
 
         self.client: Optional[genai.Client] = None
         self.session: Optional[AsyncSession] = None
@@ -67,6 +77,17 @@ class GeminiLiveSession:
         self.is_connected: bool = False
         self._audio_chunks_this_turn: int = 0
         self._session_logger: Optional[SessionLogger] = None
+
+        # Client-side VAD (eager, no lazy load) — only when explicitly selected.
+        self._silero_vad: Optional[SileroVad] = (
+            SileroVad() if vad_type == "silero" else None
+        )
+
+        # Unbounded so put_nowait never blocks or raises QueueFull. Both the
+        # background network drain and the Silero send path feed this queue;
+        # the public receive() generator is the sole consumer.
+        self._responses: asyncio.Queue = asyncio.Queue()
+        self._receive_responses_task: Optional[asyncio.Task] = None
 
     @property
     def logger(self) -> SessionLogger:
@@ -106,6 +127,15 @@ class GeminiLiveSession:
 
             self.logger.info("[GeminiSession] Connected successfully to Gemini Live API")
 
+            # Fresh queue per connection so a reconnect never inherits stale
+            # events or a leftover sentinel. Start the background drain before
+            # on_connect/initial_text so responses to the initial turn are
+            # captured.
+            self._responses = asyncio.Queue()
+            self._receive_responses_task = asyncio.create_task(
+                self._receive_responses()
+            )
+
             if self.on_connect:
                 await self.on_connect(self.session)
 
@@ -121,34 +151,50 @@ class GeminiLiveSession:
             self.is_connected = False
             return False
 
-    async def receive(self) -> AsyncGenerator[GeminiLiveResponse, None]:
-        """Yield responses from Gemini (audio, text, transcript, tool call, etc.).
+    async def _receive_responses(self) -> None:
+        """Background producer: drain the Gemini network stream into the queue.
 
-        Thin driver: each SDK response is fanned out through the per-surface
-        ``_parse_*`` helpers so the receive loop stays readable. The
-        ``_audio_chunks_this_turn`` counter is carried on ``self`` because
-        it is mutated by three different branches (AUDIO increments;
-        INTERRUPTED / TURN_COMPLETE read+reset).
+        Each SDK response is fanned out through the per-surface ``_parse_*``
+        helpers and pushed onto ``self._responses`` via ``put_nowait``. The
+        ``_audio_chunks_this_turn`` counter is carried on ``self`` because it
+        is mutated by three different branches (AUDIO increments; INTERRUPTED /
+        TURN_COMPLETE read+reset). On exit, a sentinel is pushed so the public
+        ``receive()`` consumer can terminate cleanly.
         """
-        if not self.is_connected or not self.session:
-            self.logger.warning("[GeminiSession] Not connected to Gemini, skipping receive")
+        if self.session is None:
+            self._responses.put_nowait(_SENTINEL)
             return
 
-        try:
-            self.logger.info("[GeminiSession] Receive loop started")
-            self._audio_chunks_this_turn = 0
+        self.logger.info("[GeminiSession] Receive loop started")
+        self._audio_chunks_this_turn = 0
 
+        try:
             while self.is_connected:
                 async for response in self.session.receive():
                     for event in self._parse_response(response):
-                        yield event
+                        self._responses.put_nowait(event)
                     if not self.is_connected:
                         break
-
-            self.logger.info("[GeminiSession] Receive loop ended")
-
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             self.logger.error("[GeminiSession] Receive loop failed", error=str(e))
+        finally:
+            self._responses.put_nowait(_SENTINEL)
+            self.logger.info("[GeminiSession] Receive loop ended")
+
+    async def receive(self) -> AsyncGenerator[GeminiLiveResponse, None]:
+        """Yield responses from Gemini (audio, text, transcript, tool call, etc.).
+
+        Consumer side: drains the unified ``self._responses`` queue fed by the
+        background ``_receive_responses`` task (Gemini network) and by the
+        Silero send path. Exits when the sentinel is observed.
+        """
+        while True:
+            event = await self._responses.get()
+            if event is _SENTINEL:
+                break
+            yield event
 
     def _parse_response(self, response: types.LiveServerMessage) -> Iterable[GeminiLiveResponse]:
         """Fan out one SDK response into zero or more ``GeminiLiveResponse`` events."""
@@ -275,16 +321,66 @@ class GeminiLiveSession:
         )
 
     async def send_audio(self, audio_data: bytes) -> None:
-        """Send PCM16 16 kHz audio to Gemini."""
+        """Send PCM16 16 kHz audio to Gemini.
+
+        In ``gemini`` mode the audio streams continuously and the server runs
+        VAD. In ``silero`` mode the audio is gated by the local detector and
+        manual activity signals are sent instead.
+        """
         if not self.is_connected or not self.session:
             return
 
         try:
-            await self.session.send_realtime_input(
-                audio=types.Blob(data=audio_data, mime_type="audio/pcm;rate=16000")
-            )
+            if self.vad_type == "silero" and self._silero_vad is not None:
+                await self._send_audio_silero(audio_data)
+            else:
+                await self.session.send_realtime_input(
+                    audio=types.Blob(data=audio_data, mime_type="audio/pcm;rate=16000")
+                )
         except Exception as e:
             self.logger.error("[GeminiSession] Send audio failed", error=str(e))
+
+    async def _send_audio_silero(self, audio_data: bytes) -> None:
+        """Drive the local Silero detector and forward gated audio + signals.
+
+        For each VAD transition the local ``VoiceActivityData`` event is queued
+        first (instant, no network wait) so the orchestrator reacts to speech
+        start/end without waiting on Gemini. ``send_realtime_input`` accepts
+        exactly one argument per call, so the manual signal and the audio blob
+        are sent as separate awaits.
+        """
+        vad = self._silero_vad
+        if self.session is None or vad is None:
+            return
+
+        for signal, audio in vad.process_audio(audio_data):
+            if signal == "start":
+                self._responses.put_nowait(GeminiLiveResponse(
+                    type=GeminiLiveResponseType.VOICE_ACTIVITY,
+                    data=VoiceActivityData(
+                        role=Role.USER,
+                        voice_activity_type=types.VoiceActivityType.ACTIVITY_START,
+                    ),
+                ))
+                await self.session.send_realtime_input(activity_start=types.ActivityStart())
+                if audio:
+                    await self.session.send_realtime_input(
+                        audio=types.Blob(data=audio, mime_type="audio/pcm;rate=16000")
+                    )
+            elif signal == "end":
+                self._responses.put_nowait(GeminiLiveResponse(
+                    type=GeminiLiveResponseType.VOICE_ACTIVITY,
+                    data=VoiceActivityData(
+                        role=Role.USER,
+                        voice_activity_type=types.VoiceActivityType.ACTIVITY_END,
+                    ),
+                ))
+                await self.session.send_realtime_input(activity_end=types.ActivityEnd())
+            else:
+                if audio:
+                    await self.session.send_realtime_input(
+                        audio=types.Blob(data=audio, mime_type="audio/pcm;rate=16000")
+                    )
 
     async def send_tool_response(
         self, function_id: str, function_name: str, response: Any
@@ -403,6 +499,18 @@ class GeminiLiveSession:
 
     async def disconnect(self):
         """Disconnect from Gemini Live API and clean up resources."""
+        self.is_connected = False
+
+        # Stop the background drain before tearing down the session so it
+        # cannot outlive the connection it reads from.
+        if self._receive_responses_task:
+            self._receive_responses_task.cancel()
+            try:
+                await self._receive_responses_task
+            except asyncio.CancelledError:
+                pass
+            self._receive_responses_task = None
+
         try:
             if self.session_context:
                 try:
