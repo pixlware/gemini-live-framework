@@ -279,7 +279,12 @@ class GeminiLiveSession:
             if not fc.id:
                 self.logger.error("[GeminiSession] Dropping FunctionCall with no id", tool_name=fc.name, args=args_dict)
                 continue
-            self.logger.info("[GeminiSession] Tool call received from Gemini", tool_name=fc.name, tool_call_id=fc.id, args=args_dict)
+            self.logger.info(
+                f"[GeminiSession] Tool call received from Gemini: {fc.name}",
+                tool_name=fc.name,
+                tool_call_id=fc.id,
+                args=args_dict,
+            )
             yield GeminiLiveResponse(
                 type=GeminiLiveResponseType.TOOL_CALL,
                 data=ToolCallData(id=fc.id, name=fc.name or "", args=args_dict),
@@ -400,7 +405,11 @@ class GeminiLiveSession:
         so this does NOT trigger an interruption.
         """
         if not self.session or not self.is_connected:
-            self.logger.error("[GeminiSession] Not connected, skipping send_tool_response", tool_name=function_name, tool_call_id=function_id)
+            self.logger.error(
+                f"[GeminiSession] Not connected, skipping send_tool_response: {function_name}",
+                tool_name=function_name,
+                tool_call_id=function_id,
+            )
             return
 
         result_payload = response if isinstance(response, dict) else {"result": response}
@@ -412,7 +421,12 @@ class GeminiLiveSession:
         await self.session.send_tool_response(
             function_responses=[func_response]
         )
-        self.logger.info("[GeminiSession] FunctionResponse sent back to Gemini", tool_name=function_name, tool_call_id=function_id)
+        self.logger.info(
+            f"[GeminiSession] FunctionResponse sent back to Gemini: {function_name}",
+            tool_name=function_name,
+            tool_call_id=function_id,
+            tool_response=result_payload,
+        )
 
     async def send_tool_result_as_context(
         self, function_id: str, function_name: str, response: Any
@@ -425,7 +439,11 @@ class GeminiLiveSession:
         client content so the model speaks about it naturally.
         """
         if not self.session or not self.is_connected:
-            self.logger.error("[GeminiSession] Not connected, skipping send_tool_result_as_context", tool_name=function_name, tool_call_id=function_id)
+            self.logger.error(
+                f"[GeminiSession] Not connected, skipping send_tool_result_as_context: {function_name}",
+                tool_name=function_name,
+                tool_call_id=function_id,
+            )
             return
 
         result_text = (
@@ -439,7 +457,12 @@ class GeminiLiveSession:
             ),
             turn_complete=True,
         )
-        self.logger.info("[GeminiSession] Context result sent back to Gemini", tool_name=function_name, tool_call_id=function_id)
+        self.logger.info(
+            f"[GeminiSession] Context result sent back to Gemini: {function_name}",
+            tool_name=function_name,
+            tool_call_id=function_id,
+            tool_response=response,
+        )
 
     async def send_interim_tool_response(
         self, function_id: str, function_name: str, interim_message: str
@@ -448,7 +471,11 @@ class GeminiLiveSession:
         for speech while the tool executes in the background.
         """
         if not self.session or not self.is_connected:
-            self.logger.error("[GeminiSession] Not connected, skipping send_interim_tool_response", tool_name=function_name, tool_call_id=function_id)
+            self.logger.error(
+                f"[GeminiSession] Not connected, skipping send_interim_tool_response: {function_name}",
+                tool_name=function_name,
+                tool_call_id=function_id,
+            )
             return
 
         try:
@@ -460,10 +487,15 @@ class GeminiLiveSession:
             await self.session.send_tool_response(
                 function_responses=[interim]
             )
-            self.logger.info("[GeminiSession] Interim processing response sent to Gemini", tool_name=function_name, tool_call_id=function_id)
+            self.logger.info(
+                f"[GeminiSession] Interim processing response sent to Gemini: {function_name}",
+                tool_name=function_name,
+                tool_call_id=function_id,
+                tool_response=interim_message,
+            )
         except Exception as e:
             self.logger.error(
-                "[GeminiSession] Interim response failed to send",
+                f"[GeminiSession] Interim response failed to send: {function_name}",
                 tool_name=function_name,
                 tool_call_id=function_id,
                 error=str(e),
