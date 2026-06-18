@@ -150,12 +150,13 @@ Only four variables matter to get started (full list below).
 | `DEBUG_MODE` | Enables Uvicorn auto-reload | `false` |
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `DISABLED` | `INFO` |
 | `CLOUD_LOGGING_ENABLED` | Export `SessionLogger` payloads to Google Cloud Logging | `false` |
-| `DFN_THREAD_LIMIT` | ONNX intra/inter op thread cap for DeepFilterNet (`0` = library default) | `0` |
+| `DFN_THREAD_LIMIT` | ONNX intra/inter op thread cap for DeepFilterNet (`0` = no limit, library default) | `0` |
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID for Vertex AI | `""` |
 | `GOOGLE_CLOUD_LOCATION` | GCP region for ADC / credential auto-detection | `""` |
 | `GEMINI_LOCATION` | Vertex AI region that `GeminiLiveSession` connects to | `us-central1` |
 | `GEMINI_LIVE_MODEL` | Default model when `GeminiLiveSession` is constructed without `model=` | `gemini-live-2.5-flash-native-audio` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to service account JSON | *(unset — falls back to ADC)* |
+| `GCS_BUCKET_NAME` | Default GCS bucket for `AudioRecorder` uploads when `storage_type="gcs"` and no `bucket_name` is passed | `""` |
 | `TELEMETRY_MODE` | `disabled`, `local` (JSON to `./metrics/`), `cloud` (Cloud Monitoring + dashboard + JSON) | `disabled` |
 
 </details>
