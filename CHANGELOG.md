@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.2 (2026-06-18)
+
+### Fixed
+- Duplicate tool calls now send an empty `SEND_RESPONSE` back to Gemini instead of being silently dropped, so the model is no longer left waiting on a `FunctionResponse` for the skipped call.
+
+### Changed
+- Tool and Gemini session logs now include the tool name in the message and carry `tool_args` / `tool_response` payloads for easier tracing of tool-call flows.
+
 ## 0.3.1 (2026-06-17)
 
 ### Added
