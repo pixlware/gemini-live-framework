@@ -33,6 +33,7 @@ venv.bak/
 # Environment Variables
 .env
 .env.*
+!.env.example
 
 # Logs
 logs/
