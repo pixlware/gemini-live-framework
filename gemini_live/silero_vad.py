@@ -15,9 +15,9 @@ class SileroVad:
     def __init__(
         self,
         threshold: float = 0.5,
-        prefix_padding_ms: int = 320,
+        prefix_padding_ms: int = 512,
         silence_duration_ms: int = 600,
-        min_speech_duration_ms: int = 200,
+        min_speech_duration_ms: int = 192,
         max_speech_duration_ms: int = 60000,
     ):
         model_path = os.path.join(os.path.dirname(__file__), "models", "silero_vad.onnx")
