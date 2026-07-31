@@ -4,6 +4,9 @@ Centralized configuration loaded from environment variables.
 
 from pydantic_settings import BaseSettings
 from typing import Optional
+from dotenv import load_dotenv
+
+load_dotenv()
 
 APP_VERSION = "0.1.0"
 
