@@ -28,7 +28,7 @@ class ExotelTransport(BaseTransport):
             start_data = payload.get("start", {})
             self.stream_sid = start_data.get("stream_sid")
             self.logger.info(f"[ExotelTransport] Stream started: {self.stream_sid}")
-            yield EventData(event="start", metadata=start_data)
+            yield EventData(event="start", data=start_data)
 
         elif event == "media":
             media_payload = payload.get("media", {}).get("payload")
@@ -37,7 +37,7 @@ class ExotelTransport(BaseTransport):
                     yield data
 
         elif event == "mark":
-            yield EventData(event="mark", metadata=payload.get("mark", {}))
+            yield EventData(event="mark", data=payload.get("mark", {}))
 
         elif event == "stop":
             self.logger.info(f"[ExotelTransport] Stream stopped: {self.stream_sid}")
@@ -61,6 +61,6 @@ class ExotelTransport(BaseTransport):
     async def send_event(self, data: EventData) -> None:
         self._ensure_connected()
         message = {"event": data.event, "stream_sid": self.stream_sid}
-        if data.metadata:
-            message[data.event] = data.metadata
+        if data.data:
+            message[data.event] = data.data
         await self.websocket.send_text(json.dumps(message))
