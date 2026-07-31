@@ -29,6 +29,7 @@ from .models import (
 )
 
 from .logger import SessionLogger
+from .base_tool_handler import ToolHandlerResult
 
 class GeminiLiveResponseType(Enum):
     AUDIO = "audio"
@@ -80,16 +81,9 @@ class GeminiLiveSession:
         self._session_logger: Optional[SessionLogger] = None
 
         # Client-side VAD (eager, no lazy load) — only when explicitly selected.
-        # Callers may inject a pre-configured detector to tune thresholds;
-        # otherwise fall back to the default SileroVad().
         if vad_type == "silero":
             self._silero_vad: Optional[SileroVad] = silero_vad or SileroVad()
         else:
-            if silero_vad is not None:
-                self.logger.warning(
-                    "[GeminiSession] silero_vad provided but vad_type != 'silero'; "
-                    "the injected detector is ignored."
-                )
             self._silero_vad = None
 
         # Unbounded so put_nowait never blocks or raises QueueFull. Both the
@@ -277,10 +271,14 @@ class GeminiLiveSession:
             except (TypeError, AttributeError):
                 args_dict = {}
             if not fc.id:
-                self.logger.error("[GeminiSession] Dropping FunctionCall with no id", tool_name=fc.name, args=args_dict)
+                self.logger.error(
+                    "[GeminiSession] Dropping FunctionCall with no id",
+                    tool_name=fc.name,
+                    args=args_dict,
+                )
                 continue
             self.logger.info(
-                f"[GeminiSession] Tool call received from Gemini: {fc.name}",
+                "[GeminiSession] Tool call received from Gemini",
                 tool_name=fc.name,
                 tool_call_id=fc.id,
                 args=args_dict,
@@ -406,7 +404,7 @@ class GeminiLiveSession:
         """
         if not self.session or not self.is_connected:
             self.logger.error(
-                f"[GeminiSession] Not connected, skipping send_tool_response: {function_name}",
+                "[GeminiSession] Not connected, skipping send_tool_response",
                 tool_name=function_name,
                 tool_call_id=function_id,
             )
@@ -422,10 +420,36 @@ class GeminiLiveSession:
             function_responses=[func_response]
         )
         self.logger.info(
-            f"[GeminiSession] FunctionResponse sent back to Gemini: {function_name}",
+            "[GeminiSession] FunctionResponse sent back to Gemini",
             tool_name=function_name,
             tool_call_id=function_id,
-            tool_response=result_payload,
+        )
+
+    async def send_tool_response_batch(self, results: List[ToolHandlerResult]) -> None:
+        """Send one or more FunctionResponses to Gemini in a single call.
+
+        All blocking responses of a turn are delivered together after the
+        turn's TURN_COMPLETE; a mid-turn or partial set of responses makes
+        Gemini re-emit tool calls it believes are unanswered.
+        """
+        if not self.session or not self.is_connected:
+            self.logger.error("[GeminiSession] Not connected, skipping send_tool_response_batch")
+            return
+
+        func_responses = []
+        for r in results:
+            payload = r.result if isinstance(r.result, dict) else {"result": r.result}
+            func_responses.append(types.FunctionResponse(
+                id=r.tool_id,
+                name=r.tool_name,
+                response=payload,
+            ))
+
+        await self.session.send_tool_response(function_responses=func_responses)
+        self.logger.info(
+            "[GeminiSession] Batched FunctionResponse sent back to Gemini",
+            batch_size=len(func_responses),
+            tool_names=[r.tool_name for r in results],
         )
 
     async def send_tool_result_as_context(
@@ -440,7 +464,7 @@ class GeminiLiveSession:
         """
         if not self.session or not self.is_connected:
             self.logger.error(
-                f"[GeminiSession] Not connected, skipping send_tool_result_as_context: {function_name}",
+                "[GeminiSession] Not connected, skipping send_tool_result_as_context",
                 tool_name=function_name,
                 tool_call_id=function_id,
             )
@@ -458,10 +482,9 @@ class GeminiLiveSession:
             turn_complete=True,
         )
         self.logger.info(
-            f"[GeminiSession] Context result sent back to Gemini: {function_name}",
+            "[GeminiSession] Context result sent back to Gemini",
             tool_name=function_name,
             tool_call_id=function_id,
-            tool_response=response,
         )
 
     async def send_interim_tool_response(
@@ -472,7 +495,7 @@ class GeminiLiveSession:
         """
         if not self.session or not self.is_connected:
             self.logger.error(
-                f"[GeminiSession] Not connected, skipping send_interim_tool_response: {function_name}",
+                "[GeminiSession] Not connected, skipping send_interim_tool_response",
                 tool_name=function_name,
                 tool_call_id=function_id,
             )
@@ -488,14 +511,13 @@ class GeminiLiveSession:
                 function_responses=[interim]
             )
             self.logger.info(
-                f"[GeminiSession] Interim processing response sent to Gemini: {function_name}",
+                "[GeminiSession] Interim processing response sent to Gemini",
                 tool_name=function_name,
                 tool_call_id=function_id,
-                tool_response=interim_message,
             )
         except Exception as e:
             self.logger.error(
-                f"[GeminiSession] Interim response failed to send: {function_name}",
+                "[GeminiSession] Interim response failed to send",
                 tool_name=function_name,
                 tool_call_id=function_id,
                 error=str(e),

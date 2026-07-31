@@ -115,6 +115,13 @@ class Orchestrator:
         self._tool_dispatch_tasks: set[asyncio.Task] = set()
         self.is_running: bool = False
 
+        # Batch accumulator for multi-tool turns: when the model emits 2+
+        # blocking tool calls in a single turn, buffer their FunctionResponses
+        # and send them in one batched send_tool_response call.
+        self._current_turn_tool_ids: list[str] = []
+        self._batch_tool_ids: set[str] = set()
+        self._pending_batch: dict[str, ToolHandlerResult] = {}
+
         self._response_handlers: dict[
             GeminiLiveResponseType, Callable[[Any], Awaitable[None]]
         ] = {
@@ -148,6 +155,10 @@ class Orchestrator:
             await self.transport.start()
 
             transport_task = asyncio.create_task(self._handle_transport_messages())
+
+            # Race the Gemini connect against the client transport so an early
+            # client disconnect aborts startup instead of completing a full
+            # connect + greeting + teardown for a client that is already gone.
             connect_task = asyncio.create_task(self.gemini_session.connect())
             done, _ = await asyncio.wait(
                 {connect_task, transport_task},
@@ -184,6 +195,9 @@ class Orchestrator:
             if self.audio_recorder:
                 self.audio_recorder.start()
 
+            if not self.gemini_session.initial_text:
+                await self._turn_tracker.await_user()
+
             gemini_task = asyncio.create_task(self._handle_gemini_responses())
 
             await self._run_pipelines(transport_task, gemini_task)
@@ -210,6 +224,9 @@ class Orchestrator:
         if self._tool_dispatch_tasks:
             await asyncio.gather(*self._tool_dispatch_tasks, return_exceptions=True)
         self._tool_dispatch_tasks.clear()
+        self._current_turn_tool_ids.clear()
+        self._batch_tool_ids.clear()
+        self._pending_batch.clear()
         if self.tool_handler:
             await self.tool_handler.cleanup()
 
@@ -352,6 +369,47 @@ class Orchestrator:
             await self.callbacks.on_voice_activity(data)
 
     async def _on_turn_complete(self, data: TurnCompleteData) -> None:
+        # A previously frozen batch that never completed (rare, e.g. barge-in
+        # mid-batch): flush only ITS buffered entries so they are not silently
+        # dropped. Must filter by ID — _pending_batch may also hold results
+        # buffered for the turn that is completing right now.
+        if self._batch_tool_ids:
+            stale = [
+                self._pending_batch.pop(tool_id)
+                for tool_id in list(self._pending_batch)
+                if tool_id in self._batch_tool_ids
+            ]
+            self.logger.warning(
+                "[Orchestrator] Stale tool response batch at turn boundary",
+                stale_tool_ids=list(self._batch_tool_ids),
+                flushed=len(stale),
+            )
+            self._batch_tool_ids.clear()
+            if stale:
+                try:
+                    await self.gemini_session.send_tool_response_batch(stale)
+                except Exception as e:
+                    self.logger.error(
+                        "[Orchestrator] Failed to flush stale tool responses",
+                        error=str(e),
+                    )
+
+        # Freeze this turn's expected tool set — even for a single tool call —
+        # so its responses go out together only after the turn has closed.
+        if self._current_turn_tool_ids:
+            self._batch_tool_ids = set(self._current_turn_tool_ids)
+            self.logger.info(
+                "[Orchestrator] Turn complete with tool calls; batching responses",
+                tool_ids=self._current_turn_tool_ids,
+                expected=len(self._batch_tool_ids),
+                buffered=len(self._pending_batch),
+            )
+        self._current_turn_tool_ids = []
+
+        # Fast tools may have finished before the turn closed — flush now.
+        if self._batch_tool_ids and len(self._pending_batch) >= len(self._batch_tool_ids):
+            await self._flush_batch()
+
         await self.transport.flush_audio()
         await self.transport.send_turn_complete(data)
         await self._model_vad.on_turn_complete()
@@ -363,6 +421,7 @@ class Orchestrator:
     async def _on_tool_call(self, data: ToolCallData) -> None:
         self.metric_tracker.on_tool_call()
         if self.tool_handler:
+            self._current_turn_tool_ids.append(data.id)
             self._dispatch_tool_call(data)
         else:
             self.logger.warning("[Orchestrator] Tool call received but no handler registered")
@@ -373,6 +432,18 @@ class Orchestrator:
             await self.callbacks.on_usage_metadata(data)
 
     async def _on_tool_cancellation(self, data: ToolCallCancellationData) -> None:
+        # Cancelled tools produce no FunctionResponse: drop them from every
+        # stage of batch accounting (pre-freeze list, frozen set, buffered
+        # results) so a batch can never wait on a cancelled function ID.
+        for tool_id in data.ids:
+            if tool_id in self._current_turn_tool_ids:
+                self._current_turn_tool_ids.remove(tool_id)
+            self._batch_tool_ids.discard(tool_id)
+            self._pending_batch.pop(tool_id, None)
+
+        if self._batch_tool_ids and len(self._pending_batch) >= len(self._batch_tool_ids):
+            await self._flush_batch()
+
         if self.tool_handler:
             await self.tool_handler.handle_cancellation(data.ids)
         else:
@@ -400,6 +471,36 @@ class Orchestrator:
             )
             return
 
+        # Hold every blocking response until its turn's TURN_COMPLETE so
+        # Gemini always receives the turn's FunctionResponses as one batched
+        # message. A response delivered mid-turn or as a partial set makes
+        # Gemini re-emit tool calls it believes are unanswered.
+        if result.action == ToolResponseAction.SEND_RESPONSE and (
+            result.tool_id in self._batch_tool_ids
+            or result.tool_id in self._current_turn_tool_ids
+        ):
+            self._pending_batch[result.tool_id] = result
+            self.logger.info(
+                "[Orchestrator] Buffered tool result until turn complete",
+                tool_name=result.tool_name,
+                tool_id=result.tool_id,
+                buffered=len(self._pending_batch),
+                expected=len(self._batch_tool_ids) or None,
+                turn_open=result.tool_id in self._current_turn_tool_ids,
+            )
+            if self._batch_tool_ids and len(self._pending_batch) >= len(self._batch_tool_ids):
+                await self._flush_batch()
+            return
+
+        # This result is answered outside the batch: an interim PROCESSING
+        # response (non-blocking tool — consumes the function ID on the
+        # wire), a context injection, or a late response whose turn was
+        # already settled (e.g. after a stale flush). Settle its batch
+        # accounting so a frozen or future batch never waits on this ID.
+        if result.tool_id in self._current_turn_tool_ids:
+            self._current_turn_tool_ids.remove(result.tool_id)
+        self._batch_tool_ids.discard(result.tool_id)
+
         try:
             match result.action:
                 case ToolResponseAction.SEND_RESPONSE:
@@ -420,6 +521,33 @@ class Orchestrator:
                 error=str(e),
                 tool_name=result.tool_name,
                 tool_id=result.tool_id,
+            )
+
+        # A batch that was waiting only on this ID can now flush.
+        if self._batch_tool_ids and len(self._pending_batch) >= len(self._batch_tool_ids):
+            await self._flush_batch()
+
+    async def _flush_batch(self) -> None:
+        """Send all buffered blocking tool responses as a single batched FunctionResponse."""
+        if not self._pending_batch:
+            return
+
+        batch = list(self._pending_batch.values())
+        self._pending_batch.clear()
+        self._batch_tool_ids.clear()
+
+        self.logger.info(
+            "[Orchestrator] Sending batched tool responses",
+            batch_size=len(batch),
+            tool_names=[r.tool_name for r in batch],
+        )
+
+        try:
+            await self.gemini_session.send_tool_response_batch(batch)
+        except Exception as e:
+            self.logger.error(
+                "[Orchestrator] Failed to send batched tool responses",
+                error=str(e),
             )
 
     async def _run_pipelines(
