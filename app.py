@@ -8,14 +8,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
 
+from gemini_live.logger import setup_logging
+
 from config import settings
 from routes import router
 
 # Configure logging
-logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+setup_logging()
+
 logger = logging.getLogger(__name__)
 
 
