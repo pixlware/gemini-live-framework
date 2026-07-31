@@ -176,7 +176,7 @@ class BaseToolHandler:
                     action=ToolResponseAction.SEND_RESPONSE,
                     tool_id=tool_call.id,
                     tool_name=tool_call.name,
-                    result=None,
+                    result={"success": False, "error": "Duplicate tool call detected"},
                 ))
             return
 
