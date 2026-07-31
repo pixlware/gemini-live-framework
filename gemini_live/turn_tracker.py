@@ -133,6 +133,18 @@ class TurnTracker:
             self._user_idle_timer.start()
         await self._transition(ConversationState.WAITING_FOR_USER)
 
+    async def await_user(self) -> None:
+        """Transition from INITIAL to WAITING_FOR_USER and arm the user idle timer.
+
+        Call after connection when the model is not expected to speak first,
+        so the inactivity countdown begins immediately.
+        """
+        if self._state != ConversationState.INITIAL:
+            return
+        if self._user_idle_timer:
+            self._user_idle_timer.start()
+        await self._transition(ConversationState.WAITING_FOR_USER)
+
     async def _transition(self, new_state: ConversationState) -> None:
         old_state = self._state
         if old_state == new_state:
