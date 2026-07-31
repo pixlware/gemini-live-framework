@@ -30,7 +30,7 @@ class TranscriptData(Data):
 
 class EventData(Data):
     event: str
-    metadata: dict = {}
+    data: dict = {}
 
 class InterruptionData(Data):
     audio_chunks: int = 0
