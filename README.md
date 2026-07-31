@@ -107,7 +107,7 @@ Send 16 kHz PCM16 mono audio as binary WebSocket frames; receive 24 kHz PCM16 mo
 
 **Orchestrator** — Runs three concurrent async pipelines around a single Gemini Live session: client → Gemini, Gemini → client, and tool results → Gemini.
 
-**Tool calling** — Blocking and non-blocking execution via `BaseToolHandler` and the `@tool` decorator, with built-in deduplication, cancellation, and queued results.
+**Tool calling** — Blocking and non-blocking execution via `BaseToolHandler` and the `@tool` decorator, with batched multi-tool response delivery, built-in deduplication, cancellation, and queued results.
 
 **Voice activity & turn tracking** — User VAD from Gemini (server-side) or local Silero VAD, synthesized model VAD via `ModelVAD`, and a `TurnTracker` / `ConversationState` state machine that drives user- and model-idle timers.
 
@@ -261,6 +261,8 @@ orchestrator = Orchestrator(
     tool_handler=MyTools(),
 )
 ```
+
+**Batched response delivery** — When Gemini emits multiple function calls within a single turn, the `Orchestrator` buffers their execution results and delivers all function responses together in a single batched message after `TURN_COMPLETE`. This ensures all calls in a turn are answered simultaneously and prevents Gemini from re-issuing calls it believes were dropped.
 
 </details>
 

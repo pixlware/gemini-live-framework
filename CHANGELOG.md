@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0 (2026-07-31)
+
+### Added
+- Batched tool response support via `GeminiLiveSession.send_tool_response_batch()` and turn-level response buffering in `Orchestrator`. Multi-tool function calls in a single turn are aggregated and delivered to Gemini as a single batched `FunctionResponse` upon turn completion.
+- `TurnTracker.await_user()` method to transition to `WAITING_FOR_USER` state immediately after connection when `initial_text` is empty, arming the user idle timer without waiting for model audio.
+- Automatic `.env` loading in `config.py` using `dotenv.load_dotenv()`.
+
+### Changed
+- `BaseToolHandler` duplicate tool call handling now returns an explicit error payload (`{"success": False, "error": "Duplicate tool call detected"}`) in the `FunctionResponse` instead of `None`.
+- `app.py` logging setup updated to call `gemini_live.logger.setup_logging()`.
+- Tuned default `SileroVad` thresholds (`prefix_padding_ms=512`, `min_speech_duration_ms=192`).
+
 ## 0.3.2 (2026-06-18)
 
 ### Fixed
