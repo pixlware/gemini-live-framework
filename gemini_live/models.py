@@ -1,5 +1,6 @@
 import datetime
 from enum import Enum
+from typing import Optional
 from pydantic import BaseModel
 from google.genai import types
 
@@ -27,6 +28,7 @@ class TranscriptData(Data):
     text: str
     final: bool = False
     interrupted: bool = False
+    interim: bool = False
 
 class EventData(Data):
     event: str
@@ -51,6 +53,7 @@ class ToolCallCancellationData(Data):
 class VoiceActivityData(Data):
     role: Role
     voice_activity_type: types.VoiceActivityType
+    audio_offset: Optional[str] = None
 
 class TranscriptEntry(BaseModel):
     role: Role

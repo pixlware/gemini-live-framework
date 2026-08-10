@@ -316,6 +316,10 @@ class Orchestrator:
 
     async def _on_transcript(self, data: TranscriptData) -> None:
         await self.transport.send_transcript(data)
+        # Interim transcripts are provisional and may be revised by Gemini;
+        # forward them for real-time display only, never into history/metrics.
+        if data.interim:
+            return
         if data.role == Role.USER:
             self.metric_tracker.on_user_transcript(data.text)
             if self.transcription:
@@ -492,11 +496,12 @@ class Orchestrator:
                 await self._flush_batch()
             return
 
-        # This result is answered outside the batch: an interim PROCESSING
-        # response (non-blocking tool — consumes the function ID on the
-        # wire), a context injection, or a late response whose turn was
-        # already settled (e.g. after a stale flush). Settle its batch
-        # accounting so a frozen or future batch never waits on this ID.
+        # This result is answered outside the batch: a non-blocking
+        # dispatch event (SEND_INTERIM — the function ID stays unanswered
+        # until the scheduled FunctionResponse arrives), a non-blocking
+        # final response, or a late response whose turn was already
+        # settled (e.g. after a stale flush). Settle its batch accounting
+        # so a frozen or future batch never waits on this ID.
         if result.tool_id in self._current_turn_tool_ids:
             self._current_turn_tool_ids.remove(result.tool_id)
         self._batch_tool_ids.discard(result.tool_id)
@@ -504,17 +509,23 @@ class Orchestrator:
         try:
             match result.action:
                 case ToolResponseAction.SEND_RESPONSE:
+                    self.logger.info(
+                        "[Orchestrator] Forwarding tool response to Gemini",
+                        tool_name=result.tool_name,
+                        tool_id=result.tool_id,
+                        scheduling=result.scheduling.value if result.scheduling else None,
+                    )
                     await self.gemini_session.send_tool_response(
                         result.tool_id, result.tool_name, result.result,
+                        scheduling=result.scheduling,
                     )
                 case ToolResponseAction.SEND_INTERIM:
-                    await self.gemini_session.send_interim_tool_response(
-                        result.tool_id, result.tool_name, result.interim_message,
-                    )
-                case ToolResponseAction.SEND_CONTEXT:
-                    await self.gemini_session.send_tool_result_as_context(
-                        result.tool_id, result.tool_name, result.result,
-                    )
+                    # Doc-style acknowledgment: the interim message is sent
+                    # verbatim as client text; the function call ID stays
+                    # unanswered so the real result can be delivered later
+                    # as a scheduled FunctionResponse.
+                    if result.interim_message:
+                        await self.gemini_session.send_text(result.interim_message)
         except Exception as e:
             self.logger.error(
                 "[Orchestrator] Failed to forward tool result",

@@ -1,14 +1,14 @@
 # Core Web Framework
-fastapi==0.135.2
-uvicorn[standard]==0.42.0
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
 
 # WebSocket Support
-websockets==16.0
-python-multipart==0.0.22
+websockets==16.1.1
+python-multipart==0.0.32
 
 # Data Validation
-pydantic==2.12.5
-pydantic-settings==2.13.1
+pydantic==2.13.4
+pydantic-settings==2.15.0
 
 # Development Tools
 python-dotenv==1.2.2
@@ -17,12 +17,13 @@ python-dotenv==1.2.2
 numpy==2.2.6
 audioop-lts==0.2.2; python_version >= "3.13"
 dfnstream-py==0.2.1
-soxr==1.0.0
-sherpa_onnx==1.13.3
+soxr==1.1.0
+sherpa_onnx==1.13.4
 
 # Google Cloud & AI
-google-genai==1.73.1
-google-cloud-logging==3.15.0
+google-genai==2.17.0
+google-cloud-logging==3.16.2
+google-cloud-storage==3.13.1
 
 # Telemetry
 gemini-live-telemetry==0.1.1

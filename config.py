@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     GOOGLE_CLOUD_PROJECT: str = ""
     GOOGLE_CLOUD_LOCATION: str = ""
     GEMINI_LOCATION: str = "us-central1"
+    GEMINI_API_KEY: Optional[str] = None
     GEMINI_LIVE_MODEL: str = "gemini-live-2.5-flash-native-audio"
     GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None
     CLOUD_LOGGING_ENABLED: bool = False

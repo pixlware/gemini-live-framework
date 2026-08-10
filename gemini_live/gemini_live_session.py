@@ -1,7 +1,6 @@
 """Gemini Live API session — manages the WebSocket connection, audio streaming, and response parsing."""
 
 import asyncio
-import json
 from enum import Enum
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Iterable, List, Optional, AsyncContextManager, Callable, Awaitable
@@ -105,10 +104,14 @@ class GeminiLiveSession:
     async def connect(self) -> bool:
         """Establish connection to Gemini Live API.  Returns True on success."""
         try:
+            # api_key=None falls back to ADC; a Vertex AI (express-mode) key
+            # switches auth to the key while project/location keep routing to
+            # the regional endpoint.
             self.client = genai.Client(
-                vertexai=True,
+                enterprise=True,
                 project=settings.GOOGLE_CLOUD_PROJECT,
                 location=settings.GEMINI_LOCATION,
+                api_key=settings.GEMINI_API_KEY or None,
             )
 
             self.logger.info("[GeminiSession] Connecting to Gemini Live API", model=self.model)
@@ -243,6 +246,16 @@ class GeminiLiveSession:
                         data=TextData(text=part.text),
                     )
 
+        if sc.interim_input_transcription and sc.interim_input_transcription.text:
+            yield GeminiLiveResponse(
+                type=GeminiLiveResponseType.TRANSCRIPT,
+                data=TranscriptData(
+                    role=Role.USER,
+                    text=sc.interim_input_transcription.text,
+                    interim=True,
+                ),
+            )
+
         if sc.input_transcription and sc.input_transcription.text:
             yield GeminiLiveResponse(
                 type=GeminiLiveResponseType.TRANSCRIPT,
@@ -308,6 +321,7 @@ class GeminiLiveSession:
             data=VoiceActivityData(
                 role=Role.USER,
                 voice_activity_type=va.voice_activity_type,
+                audio_offset=va.audio_offset,
             ),
         )
 
@@ -395,12 +409,18 @@ class GeminiLiveSession:
                     )
 
     async def send_tool_response(
-        self, function_id: str, function_name: str, response: Any
+        self,
+        function_id: str,
+        function_name: str,
+        response: Any,
+        scheduling: Optional[types.FunctionResponseScheduling] = None,
     ) -> None:
-        """Send a FunctionResponse to Gemini (blocking tools).
+        """Send a FunctionResponse to Gemini.
 
-        Gemini is waiting for a FunctionResponse matching the tool call ID,
-        so this does NOT trigger an interruption.
+        Blocking tools answer within their turn and pass no *scheduling*.
+        Non-blocking (asynchronous) tools pass the per-tool scheduling
+        policy (SILENT / WHEN_IDLE / INTERRUPT) so Gemini knows how to
+        announce the result relative to any ongoing interaction.
         """
         if not self.session or not self.is_connected:
             self.logger.error(
@@ -415,6 +435,7 @@ class GeminiLiveSession:
             id=function_id,
             name=function_name,
             response=result_payload,
+            scheduling=scheduling,
         )
         await self.session.send_tool_response(
             function_responses=[func_response]
@@ -423,6 +444,7 @@ class GeminiLiveSession:
             "[GeminiSession] FunctionResponse sent back to Gemini",
             tool_name=function_name,
             tool_call_id=function_id,
+            scheduling=scheduling.value if scheduling else None,
         )
 
     async def send_tool_response_batch(self, results: List[ToolHandlerResult]) -> None:
@@ -451,77 +473,6 @@ class GeminiLiveSession:
             batch_size=len(func_responses),
             tool_names=[r.tool_name for r in results],
         )
-
-    async def send_tool_result_as_context(
-        self, function_id: str, function_name: str, response: Any
-    ) -> None:
-        """Inject a tool result as client content (non-blocking tools only).
-
-        The interim PROCESSING FunctionResponse already consumed the
-        function_id, so a second FunctionResponse with the same ID would
-        make the model repeat itself.  Instead we inject the result as
-        client content so the model speaks about it naturally.
-        """
-        if not self.session or not self.is_connected:
-            self.logger.error(
-                "[GeminiSession] Not connected, skipping send_tool_result_as_context",
-                tool_name=function_name,
-                tool_call_id=function_id,
-            )
-            return
-
-        result_text = (
-            f"[Tool completed] {function_name} result: "
-            f"{json.dumps(response, default=str)}"
-        )
-        await self.session.send_client_content(
-            turns=types.Content(
-                parts=[types.Part(text=result_text)],
-                role="user",
-            ),
-            turn_complete=True,
-        )
-        self.logger.info(
-            "[GeminiSession] Context result sent back to Gemini",
-            tool_name=function_name,
-            tool_call_id=function_id,
-        )
-
-    async def send_interim_tool_response(
-        self, function_id: str, function_name: str, interim_message: str
-    ) -> None:
-        """Send an interim PROCESSING FunctionResponse to unblock the model
-        for speech while the tool executes in the background.
-        """
-        if not self.session or not self.is_connected:
-            self.logger.error(
-                "[GeminiSession] Not connected, skipping send_interim_tool_response",
-                tool_name=function_name,
-                tool_call_id=function_id,
-            )
-            return
-
-        try:
-            interim = types.FunctionResponse(
-                id=function_id,
-                name=function_name,
-                response={"status": "PROCESSING", "message": interim_message},
-            )
-            await self.session.send_tool_response(
-                function_responses=[interim]
-            )
-            self.logger.info(
-                "[GeminiSession] Interim processing response sent to Gemini",
-                tool_name=function_name,
-                tool_call_id=function_id,
-            )
-        except Exception as e:
-            self.logger.error(
-                "[GeminiSession] Interim response failed to send",
-                tool_name=function_name,
-                tool_call_id=function_id,
-                error=str(e),
-            )
 
     async def send_text(self, text: str, turn_complete: bool = True) -> None:
         """Send text input to Gemini.

@@ -19,6 +19,7 @@ tools.
 
 Example
 -------
+    from google.genai import types
     from gemini_live.base_tool_handler import BaseToolHandler, tool
 
     class MyTools(BaseToolHandler):
@@ -27,7 +28,11 @@ Example
         async def get_clock(self) -> dict:
             return {"time": datetime.now().isoformat()}
 
-        @tool(blocking=False, execution_delay=3.0, interim_message="Looking it up…")
+        @tool(
+            blocking=False,
+            scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
+            interim_message="repeat this sentence: 'Looking it up, one moment…'",
+        )
         async def fetch_knowledge(self, query: str) -> dict:
             return {"answer": await search(query)}
 
@@ -44,6 +49,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from google.genai import types
+
 from .models import ToolCallData
 from .logger import SessionLogger
 
@@ -52,16 +59,25 @@ DEDUP_COOLDOWN_SECONDS = 8.0
 
 @dataclass
 class ToolConfig:
-    """Configuration for a single tool's execution behaviour."""
+    """Configuration for a single tool's execution behaviour.
+
+    ``scheduling`` and ``interim_message`` apply to non-blocking tools only.
+    ``interim_message`` is sent to the model verbatim as client text —
+    phrase it as a prompt (e.g. "repeat this sentence: '…'").
+    """
     blocking: bool = True
-    execution_delay: float = 2.0
     interim_message: str = ""
+    scheduling: types.FunctionResponseScheduling = (
+        types.FunctionResponseScheduling.WHEN_IDLE
+    )
 
 
 def tool(
     blocking: bool = True,
-    execution_delay: float = 2.0,
     interim_message: str = "",
+    scheduling: types.FunctionResponseScheduling = (
+        types.FunctionResponseScheduling.WHEN_IDLE
+    ),
 ) -> Callable:
     """Decorator that marks a method as a Gemini-callable tool and attaches
     its ``ToolConfig``.
@@ -69,11 +85,15 @@ def tool(
     Only decorated methods appear in the handler's dispatch registry — this
     is what prevents Gemini from invoking framework internals or consumer
     helpers by hallucinating their names.
+
+    ``scheduling`` controls how Gemini announces a non-blocking tool's
+    ``FunctionResponse`` (SILENT / WHEN_IDLE / INTERRUPT); it is ignored
+    for blocking tools, whose responses are answered within their turn.
     """
     config = ToolConfig(
         blocking=blocking,
-        execution_delay=execution_delay,
         interim_message=interim_message,
+        scheduling=scheduling,
     )
 
     def decorator(fn: Callable) -> Callable:
@@ -87,17 +107,22 @@ class ToolResponseAction(Enum):
     """Action the Orchestrator should take for a tool result."""
     SEND_RESPONSE = "send_response"
     SEND_INTERIM = "send_interim"
-    SEND_CONTEXT = "send_context"
 
 
 @dataclass
 class ToolHandlerResult:
-    """Structured result emitted to the Orchestrator for forwarding to Gemini."""
+    """Structured result emitted to the Orchestrator for forwarding to Gemini.
+
+    ``scheduling`` is attached by the handler (from ``ToolConfig``) at emit
+    time for non-blocking tools; it stays ``None`` for blocking tools so
+    their ``FunctionResponse`` never carries a scheduling policy.
+    """
     action: ToolResponseAction
     tool_id: str
     tool_name: str
     result: Optional[Dict[str, Any]] = None
     interim_message: str = ""
+    scheduling: Optional[types.FunctionResponseScheduling] = None
 
 
 class BaseToolHandler:
@@ -312,17 +337,15 @@ class BaseToolHandler:
             ))
 
         task = asyncio.create_task(
-            self._run_non_blocking(tool_call, config.execution_delay)
+            self._run_non_blocking(tool_call, config)
         )
         self._pending_tasks[tool_call.id] = task
 
     async def _run_non_blocking(
-        self, tool_call: ToolCallData, delay: float
+        self, tool_call: ToolCallData, config: ToolConfig
     ) -> None:
         tool_hash = self._compute_hash(tool_call.name, tool_call.args)
         try:
-            if delay > 0:
-                await asyncio.sleep(delay)
             result = await self._execute(tool_call)
         except asyncio.CancelledError:
             self.logger.info(
@@ -356,12 +379,19 @@ class BaseToolHandler:
             self._pending_tasks.pop(tool_call.id, None)
             return
 
+        self.logger.info(
+            f"[{type(self).__name__}] Non-blocking tool finished; emitting scheduled FunctionResponse: {tool_call.name}",
+            tool_name=tool_call.name,
+            tool_id=tool_call.id,
+            scheduling=config.scheduling.value,
+        )
         if self._send_tool_result:
             await self._send_tool_result(ToolHandlerResult(
-                action=ToolResponseAction.SEND_CONTEXT,
+                action=ToolResponseAction.SEND_RESPONSE,
                 tool_id=tool_call.id,
                 tool_name=tool_call.name,
                 result=result,
+                scheduling=config.scheduling,
             ))
         self._finish_hash(tool_hash)
         self._pending_tasks.pop(tool_call.id, None)
