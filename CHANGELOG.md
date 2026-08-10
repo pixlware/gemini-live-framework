@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.0 (2026-08-06)
+
+### Changed
+- Upgraded all dependencies to latest compatible versions: `google-genai` 1.73.1 → 2.17.0, `fastapi` 0.135.2 → 0.141.1, `uvicorn` 0.42.0 → 0.52.1, `websockets` 16.0 → 16.1.1, `pydantic` 2.12.5 → 2.13.4, `pydantic-settings` 2.13.1 → 2.15.0, `python-multipart` 0.0.22 → 0.0.32, `soxr` 1.0.0 → 1.1.0, `sherpa_onnx` 1.13.3 → 1.13.4, `google-cloud-logging` 3.15.0 → 3.16.2. `numpy` stays at 2.2.6 (capped by `dfnstream-py<2.3`).
+- `GeminiLiveSession.connect()` now constructs the client with `enterprise=True` instead of the legacy `vertexai=True` flag.
+- Non-blocking tool results are now sent as `FunctionResponse` with the original call ID instead of `send_client_content` context injection; conversation history no longer contains synthetic `[Tool completed]` user turns.
+- `interim_message` is now sent to the model **verbatim** as client text — phrase it as a prompt (e.g. `"repeat this sentence: '...'"`). The framework no longer wraps it in a PROCESSING `FunctionResponse`.
+- `AudioRecorder` constructor: `filename` and `output_dir` now default to `""` (lazily resolved to a UUID / `".recordings"`); `storage_type` value renamed from `"gcs"` to `"cloud"`; parameter order changed (`logger` moved last).
+- `AudioRecorder` storage refactored: `_save_recording()` is now a router delegating to `_save_local()` or `_save_cloud()`. Both paths build WAV in-memory first via `_build_wav_bytes()`. `_upload_to_gcs()` renamed to `_save_cloud()` (overridable for other providers). Lazy imports (`io`, `google.cloud.storage`) moved to module level.
+
+### Added
+- Optional `GEMINI_API_KEY` setting for Vertex AI express-mode authentication. When set, the live session authenticates with the API key (`x-goog-api-key`) instead of ADC while still using `GEMINI_LOCATION` for regional endpoint routing. Gemini Developer keys are not accepted.
+- Interim input transcription support: `TranscriptData.interim` flag populated from `LiveServerContent.interim_input_transcription`. Interim chunks are forwarded to the transport for real-time display but skipped by `MetricTracker` and `Transcription` history.
+- `VoiceActivityData.audio_offset` populated from server-side `VoiceActivity.audio_offset` (duration string relative to the start of the audio stream).
+- Docs for passing through newer `LiveConnectConfig` fields (`translation_config`, `custom_vocabulary` / `adaptation_phrases` via `AudioTranscriptionConfig`) and for `UsageMetadata.service_tier`.
+- `scheduling` option on `@tool` / `ToolConfig` (`types.FunctionResponseScheduling`; default `WHEN_IDLE`). Attached to the emitted `ToolHandlerResult` for non-blocking tools only and logged at every stage (handler, orchestrator, session); blocking tools carry no policy.
+- `GeminiLiveSession.send_tool_response()` accepts an optional `scheduling` parameter.
+
+### Removed (breaking)
+- `GeminiLiveSession.send_interim_tool_response()` and `GeminiLiveSession.send_tool_result_as_context()` — replaced by the verbatim text nudge and the scheduled `FunctionResponse`.
+- `ToolResponseAction.SEND_CONTEXT` — non-blocking completions now emit `SEND_RESPONSE` with `scheduling` set.
+- `execution_delay` option on `@tool` / `ToolConfig` — it existed only to let the old interim PROCESSING response land before the tool ran. Ordering is now guaranteed (the interim text is awaited before the background task starts) and announcement pacing is owned by `scheduling`; tools that want an artificial delay can `await asyncio.sleep()` themselves.
+
 ## 0.4.1 (2026-07-31)
 
 ### Changed

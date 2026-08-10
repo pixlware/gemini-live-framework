@@ -156,7 +156,8 @@ Only four variables matter to get started (full list below).
 | `GEMINI_LOCATION` | Vertex AI region that `GeminiLiveSession` connects to | `us-central1` |
 | `GEMINI_LIVE_MODEL` | Default model when `GeminiLiveSession` is constructed without `model=` | `gemini-live-2.5-flash-native-audio` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to service account JSON | *(unset — falls back to ADC)* |
-| `GCS_BUCKET_NAME` | Default GCS bucket for `AudioRecorder` uploads when `storage_type="gcs"` and no `bucket_name` is passed | `""` |
+| `GEMINI_API_KEY` | Vertex AI (express-mode) API key. When set, the live session authenticates with the key instead of ADC; `GOOGLE_CLOUD_PROJECT`/`GEMINI_LOCATION` still route to the regional endpoint. Gemini Developer keys are not accepted. | *(unset — uses ADC)* |
+| `GCS_BUCKET_NAME` | Default GCS bucket for `AudioRecorder` uploads when `storage_type="cloud"` and no `bucket_name` is passed | `""` |
 | `TELEMETRY_MODE` | `disabled`, `local` (JSON to `./metrics/`), `cloud` (Cloud Monitoring + dashboard + JSON) | `disabled` |
 
 </details>
@@ -234,6 +235,7 @@ transport = FastapiTransport(
 Subclass `BaseToolHandler` and define async methods whose names match your Gemini `FunctionDeclaration` names. Every tool method **must** be decorated with `@tool(...)` — the decorator doubles as the dispatch allowlist, so Gemini can't reach undecorated helpers or framework internals.
 
 ```python
+from google.genai import types
 from gemini_live.base_tool_handler import BaseToolHandler, tool
 
 
@@ -244,10 +246,15 @@ class MyTools(BaseToolHandler):
         """Blocking tool — Gemini waits for the result."""
         return {"temperature": 22, "city": city}
 
-    @tool(blocking=False, execution_delay=2.0, interim_message="Looking that up...")
+    @tool(
+        blocking=False,
+        scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
+        interim_message="repeat this sentence: 'Looking that up, one moment...'",
+    )
     async def search_knowledge(self, query: str) -> dict:
-        """Non-blocking — Gemini gets an interim response immediately,
-        then the final result is injected as context."""
+        """Non-blocking (asynchronous) — runs in the background while the
+        conversation continues; the result is delivered as a scheduled
+        FunctionResponse."""
         return {"answer": await some_search(query)}
 
     async def on_complete(self, tool_call, result):
@@ -262,7 +269,17 @@ orchestrator = Orchestrator(
 )
 ```
 
-**Batched response delivery** — When Gemini emits multiple function calls within a single turn, the `Orchestrator` buffers their execution results and delivers all function responses together in a single batched message after `TURN_COMPLETE`. This ensures all calls in a turn are answered simultaneously and prevents Gemini from re-issuing calls it believes were dropped.
+**Asynchronous (non-blocking) tools** — With `blocking=False` the tool runs as a background task while the model keeps listening and speaking. The flow follows [Google's asynchronous function calling guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/live-api/asynchronous-function-calling):
+
+1. On dispatch, `interim_message` (if set) is sent to the model **verbatim as client text**. Phrase it as a prompt — e.g. `"repeat this sentence: 'I'm booking your ticket now, please wait.'"` — so the model speaks it while the tool runs. The function call ID stays unanswered.
+2. On completion, the real result is sent as a `FunctionResponse` with the original call ID and the tool's `scheduling` policy:
+   - `WHEN_IDLE` (default) — the model announces the result at the next natural pause, without interrupting the user.
+   - `SILENT` — the result is added to context only; the model mentions it when relevant or asked.
+   - `INTERRUPT` — the model announces the result immediately, interrupting any ongoing interaction. Reserve for critical alerts.
+
+`scheduling` applies only to non-blocking tools; blocking tools answer within their turn and carry no policy. Note the "SILENT caveat" from the docs: the model may still occasionally narrate a silent tool — add a system-instruction guardrail (e.g. "When using <tool>, perform a SILENT EXECUTION and say nothing") if true silence matters.
+
+**Batched response delivery** — When Gemini emits multiple **blocking** function calls within a single turn, the `Orchestrator` buffers their execution results and delivers all function responses together in a single batched message after `TURN_COMPLETE`. This ensures all calls in a turn are answered simultaneously and prevents Gemini from re-issuing calls it believes were dropped. Non-blocking tools are excluded from the batch — their responses are delivered independently whenever they finish, per their scheduling policy.
 
 </details>
 
@@ -310,7 +327,7 @@ from gemini_live.audio_recorder import AudioRecorder
 recorder = AudioRecorder()
 
 # Or upload to Google Cloud Storage on stop()
-recorder = AudioRecorder(storage_type="gcs", bucket_name="my-bucket")  # falls back to GCS_BUCKET_NAME
+recorder = AudioRecorder(storage_type="cloud", bucket_name="my-bucket")  # falls back to GCS_BUCKET_NAME
 
 orchestrator = Orchestrator(transport=t, gemini_session=s, audio_recorder=recorder)
 ```
@@ -372,6 +389,26 @@ config = build_gemini_live_config(
     enable_google_search=True,
 )
 ```
+
+Newer `LiveConnectConfig` capabilities need no builder support — pass them straight through:
+
+```python
+from google.genai import types
+
+config = build_gemini_live_config(
+    system_instruction="...",
+    # Live translation of transcripts (google-genai >= 2.8)
+    translation_config=types.TranslationConfig(...),
+    # Bias speech recognition toward domain terms (google-genai >= 2.9/2.13)
+    input_audio_transcription=types.AudioTranscriptionConfig(
+        language_codes=["en-US"],
+        custom_vocabulary=[...],
+        adaptation_phrases=[...],
+    ),
+)
+```
+
+Related: `USAGE_METADATA` events come from the SDK's `UsageMetadata`, which also carries `service_tier` (google-genai >= 2.9) if you consume the raw SDK object.
 
 </details>
 
