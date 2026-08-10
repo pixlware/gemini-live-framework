@@ -6,10 +6,12 @@ import datetime
 import os
 import time
 import uuid
+import io
 import wave
 from typing import Optional
 
 import numpy as np
+from google.cloud import storage
 
 from config import settings
 from .audio_transcoder import PcmResampler
@@ -27,14 +29,14 @@ class AudioRecorder:
 
     def __init__(
         self,
-        filename: str = uuid.uuid4().hex,
-        output_dir: str = ".recordings",
-        logger: Optional[SessionLogger] = None,
-        storage_type: str = "local",  # "local" or "gcs"
+        filename: str = "",
+        output_dir: str = "",
+        storage_type: str = "local",  # "local" or "cloud"
         bucket_name: Optional[str] = None,
+        logger: Optional[SessionLogger] = None,
     ):
-        self.filename = filename
-        self._output_dir = output_dir
+        self.filename = filename or uuid.uuid4().hex
+        self._output_dir = output_dir or ".recordings"
 
         self._start_mono: float = 0.0
         self._start_time: datetime.datetime | None = None
@@ -81,7 +83,7 @@ class AudioRecorder:
         self._append_to_track(self._model_track, self._model_resampler.process(audio_data))
 
     def stop(self) -> None:
-        """Finalize the recording and write to disk or upload to GCS."""
+        """Finalize the recording: mix stereo, build WAV, and persist."""
         if not self.is_recording:
             return
 
@@ -101,12 +103,8 @@ class AudioRecorder:
             )
 
             duration_sec = max_len / (OUTPUT_SAMPLE_RATE * BYTES_PER_SAMPLE)
-
-            if self._storage_type == "gcs":
-                wav_bytes = self._build_wav_bytes(stereo)
-                filepath = self._upload_to_gcs(wav_bytes)
-            else:
-                filepath = self._save_recording(stereo)
+            wav_bytes = self._build_wav_bytes(stereo)
+            filepath = self._save_recording(wav_bytes)
 
             start_time = self._start_time.isoformat() if self._start_time else "?"
             end_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -129,32 +127,26 @@ class AudioRecorder:
 
     # --- Storage -------------------------------------------------------
 
-    def _save_recording(self, audio_data: bytes) -> str:
-        """Persist the stereo audio to local disk. Returns the file path."""
+    def _save_recording(self, wav_bytes: bytes) -> str:
+        """Route to local or cloud storage based on ``storage_type``."""
+        if self._storage_type == "cloud":
+            return self._save_cloud(wav_bytes)
+        return self._save_local(wav_bytes)
+
+    def _save_local(self, wav_bytes: bytes) -> str:
+        """Write the WAV bytes to local disk. Returns the file path."""
         os.makedirs(self._output_dir, exist_ok=True)
         filepath = os.path.join(self._output_dir, f"{self.filename}.wav")
-        with wave.open(filepath, "wb") as wf:
-            wf.setnchannels(NUM_CHANNELS_STEREO)
-            wf.setsampwidth(BYTES_PER_SAMPLE)
-            wf.setframerate(OUTPUT_SAMPLE_RATE)
-            wf.writeframes(audio_data)
+        with open(filepath, "wb") as f:
+            f.write(wav_bytes)
         return filepath
 
-    def _build_wav_bytes(self, audio_data: bytes) -> bytes:
-        """Create a full WAV file format with headers in memory."""
-        import io
-        wav_io = io.BytesIO()
-        with wave.open(wav_io, "wb") as wf:
-            wf.setnchannels(NUM_CHANNELS_STEREO)
-            wf.setsampwidth(BYTES_PER_SAMPLE)
-            wf.setframerate(OUTPUT_SAMPLE_RATE)
-            wf.writeframes(audio_data)
-        return wav_io.getvalue()
+    def _save_cloud(self, wav_bytes: bytes) -> str:
+        """Upload the WAV bytes to Google Cloud Storage. Returns the GCS URI.
 
-    def _upload_to_gcs(self, wav_bytes: bytes) -> str:
-        """Upload the WAV bytes to Google Cloud Storage. Returns the GCS URI."""
-        from google.cloud import storage
-
+        Subclasses override this method to upload to a different cloud
+        provider (e.g. S3).
+        """
         bucket_name = self._bucket_name
         if not bucket_name:
             raise ValueError("GCS bucket name is not configured.")
@@ -169,6 +161,16 @@ class AudioRecorder:
         blob.upload_from_string(wav_bytes, content_type="audio/wav")
 
         return f"gs://{bucket_name}/{gcs_path}"
+
+    def _build_wav_bytes(self, audio_data: bytes) -> bytes:
+        """Create a full WAV file in memory from raw stereo PCM data."""
+        wav_io = io.BytesIO()
+        with wave.open(wav_io, "wb") as wf:
+            wf.setnchannels(NUM_CHANNELS_STEREO)
+            wf.setsampwidth(BYTES_PER_SAMPLE)
+            wf.setframerate(OUTPUT_SAMPLE_RATE)
+            wf.writeframes(audio_data)
+        return wav_io.getvalue()
 
     def _append_to_track(self, track: bytearray, audio: bytes) -> None:
         elapsed = time.monotonic() - self._start_mono
