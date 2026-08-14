@@ -17,6 +17,19 @@ dispatcher uses to decide which methods Gemini is allowed to invoke —
 undecorated methods (including framework internals) cannot be called as
 tools.
 
+For non-blocking tools, include ``"behavior": "NON_BLOCKING"`` in the
+corresponding tool declaration so the Gemini backend treats the call as
+asynchronous.  With this behavior, Gemini natively streams verbal
+acknowledgment while
+the tool runs in the background — no client-side prompt injection needed.
+Guide the model persona via ``SystemInstruction``::
+
+    <TOOL_EXECUTION_GUIDELINES>
+    When invoking long-running tools, give a brief natural verbal
+    acknowledgment (e.g. "Sure, let me check that for you…").
+    DO NOT wait in silence.
+    </TOOL_EXECUTION_GUIDELINES>
+
 Example
 -------
     from google.genai import types
@@ -31,7 +44,6 @@ Example
         @tool(
             blocking=False,
             scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
-            interim_message="repeat this sentence: 'Looking it up, one moment…'",
         )
         async def fetch_knowledge(self, query: str) -> dict:
             return {"answer": await search(query)}
@@ -46,7 +58,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass
-from enum import Enum
+
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from google.genai import types
@@ -61,12 +73,10 @@ DEDUP_COOLDOWN_SECONDS = 8.0
 class ToolConfig:
     """Configuration for a single tool's execution behaviour.
 
-    ``scheduling`` and ``interim_message`` apply to non-blocking tools only.
-    ``interim_message`` is sent to the model verbatim as client text —
-    phrase it as a prompt (e.g. "repeat this sentence: '…'").
+    ``scheduling`` applies to non-blocking tools only and controls how
+    Gemini announces the deferred ``FunctionResponse``.
     """
     blocking: bool = True
-    interim_message: str = ""
     scheduling: types.FunctionResponseScheduling = (
         types.FunctionResponseScheduling.WHEN_IDLE
     )
@@ -74,7 +84,6 @@ class ToolConfig:
 
 def tool(
     blocking: bool = True,
-    interim_message: str = "",
     scheduling: types.FunctionResponseScheduling = (
         types.FunctionResponseScheduling.WHEN_IDLE
     ),
@@ -92,7 +101,6 @@ def tool(
     """
     config = ToolConfig(
         blocking=blocking,
-        interim_message=interim_message,
         scheduling=scheduling,
     )
 
@@ -103,12 +111,6 @@ def tool(
     return decorator
 
 
-class ToolResponseAction(Enum):
-    """Action the Orchestrator should take for a tool result."""
-    SEND_RESPONSE = "send_response"
-    SEND_INTERIM = "send_interim"
-
-
 @dataclass
 class ToolHandlerResult:
     """Structured result emitted to the Orchestrator for forwarding to Gemini.
@@ -117,11 +119,9 @@ class ToolHandlerResult:
     time for non-blocking tools; it stays ``None`` for blocking tools so
     their ``FunctionResponse`` never carries a scheduling policy.
     """
-    action: ToolResponseAction
     tool_id: str
     tool_name: str
     result: Optional[Dict[str, Any]] = None
-    interim_message: str = ""
     scheduling: Optional[types.FunctionResponseScheduling] = None
 
 
@@ -198,7 +198,6 @@ class BaseToolHandler:
         if self._is_duplicate(tool_call):
             if self._send_tool_result:
                 await self._send_tool_result(ToolHandlerResult(
-                    action=ToolResponseAction.SEND_RESPONSE,
                     tool_id=tool_call.id,
                     tool_name=tool_call.name,
                     result={"success": False, "error": "Duplicate tool call detected"},
@@ -216,7 +215,6 @@ class BaseToolHandler:
             )
             if self._send_tool_result:
                 await self._send_tool_result(ToolHandlerResult(
-                    action=ToolResponseAction.SEND_RESPONSE,
                     tool_id=tool_call.id,
                     tool_name=tool_call.name,
                     result={"success": False, "error": f"Unknown tool: {tool_call.name}"},
@@ -310,7 +308,6 @@ class BaseToolHandler:
 
         if self._send_tool_result:
             await self._send_tool_result(ToolHandlerResult(
-                action=ToolResponseAction.SEND_RESPONSE,
                 tool_id=tool_call.id,
                 tool_name=tool_call.name,
                 result=result,
@@ -327,15 +324,6 @@ class BaseToolHandler:
             tool_id=tool_call.id,
             tool_args=tool_call.args,
         )
-
-        if self._send_tool_result:
-            await self._send_tool_result(ToolHandlerResult(
-                action=ToolResponseAction.SEND_INTERIM,
-                tool_id=tool_call.id,
-                tool_name=tool_call.name,
-                interim_message=config.interim_message,
-            ))
-
         task = asyncio.create_task(
             self._run_non_blocking(tool_call, config)
         )
@@ -387,7 +375,6 @@ class BaseToolHandler:
         )
         if self._send_tool_result:
             await self._send_tool_result(ToolHandlerResult(
-                action=ToolResponseAction.SEND_RESPONSE,
                 tool_id=tool_call.id,
                 tool_name=tool_call.name,
                 result=result,

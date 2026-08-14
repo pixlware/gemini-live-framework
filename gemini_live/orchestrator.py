@@ -23,7 +23,7 @@ from .models import (
 )
 from .transports.base_transport import BaseTransport
 from .gemini_live_session import GeminiLiveSession, GeminiLiveResponseType
-from .base_tool_handler import BaseToolHandler, ToolHandlerResult, ToolResponseAction
+from .base_tool_handler import BaseToolHandler, ToolHandlerResult
 from .transcription import Transcription
 from .metric_tracker import MetricTracker
 from .timer import Timer
@@ -425,7 +425,9 @@ class Orchestrator:
     async def _on_tool_call(self, data: ToolCallData) -> None:
         self.metric_tracker.on_tool_call()
         if self.tool_handler:
-            self._current_turn_tool_ids.append(data.id)
+            config = self.tool_handler._get_tool_config(data.name)
+            if config and config.blocking:
+                self._current_turn_tool_ids.append(data.id)
             self._dispatch_tool_call(data)
         else:
             self.logger.warning("[Orchestrator] Tool call received but no handler registered")
@@ -468,7 +470,6 @@ class Orchestrator:
             self.tool_handler._cancelled_ids.pop(result.tool_id, None)
             self.logger.info(
                 "[Orchestrator] Suppressed tool result send due to tool cancellation",
-                action=result.action.value,
                 tool_name=result.tool_name,
                 tool_id=result.tool_id,
                 reason="cancelled_before_send",
@@ -479,10 +480,8 @@ class Orchestrator:
         # Gemini always receives the turn's FunctionResponses as one batched
         # message. A response delivered mid-turn or as a partial set makes
         # Gemini re-emit tool calls it believes are unanswered.
-        if result.action == ToolResponseAction.SEND_RESPONSE and (
-            result.tool_id in self._batch_tool_ids
-            or result.tool_id in self._current_turn_tool_ids
-        ):
+        if (result.tool_id in self._batch_tool_ids
+                or result.tool_id in self._current_turn_tool_ids):
             self._pending_batch[result.tool_id] = result
             self.logger.info(
                 "[Orchestrator] Buffered tool result until turn complete",
@@ -497,35 +496,24 @@ class Orchestrator:
             return
 
         # This result is answered outside the batch: a non-blocking
-        # dispatch event (SEND_INTERIM — the function ID stays unanswered
-        # until the scheduled FunctionResponse arrives), a non-blocking
-        # final response, or a late response whose turn was already
-        # settled (e.g. after a stale flush). Settle its batch accounting
-        # so a frozen or future batch never waits on this ID.
+        # tool's final response, or a late response whose turn was
+        # already settled (e.g. after a stale flush). Settle its batch
+        # accounting so a frozen or future batch never waits on this ID.
         if result.tool_id in self._current_turn_tool_ids:
             self._current_turn_tool_ids.remove(result.tool_id)
         self._batch_tool_ids.discard(result.tool_id)
 
         try:
-            match result.action:
-                case ToolResponseAction.SEND_RESPONSE:
-                    self.logger.info(
-                        "[Orchestrator] Forwarding tool response to Gemini",
-                        tool_name=result.tool_name,
-                        tool_id=result.tool_id,
-                        scheduling=result.scheduling.value if result.scheduling else None,
-                    )
-                    await self.gemini_session.send_tool_response(
-                        result.tool_id, result.tool_name, result.result,
-                        scheduling=result.scheduling,
-                    )
-                case ToolResponseAction.SEND_INTERIM:
-                    # Doc-style acknowledgment: the interim message is sent
-                    # verbatim as client text; the function call ID stays
-                    # unanswered so the real result can be delivered later
-                    # as a scheduled FunctionResponse.
-                    if result.interim_message:
-                        await self.gemini_session.send_text(result.interim_message)
+            self.logger.info(
+                "[Orchestrator] Forwarding tool response to Gemini",
+                tool_name=result.tool_name,
+                tool_id=result.tool_id,
+                scheduling=result.scheduling.value if result.scheduling else None,
+            )
+            await self.gemini_session.send_tool_response(
+                result.tool_id, result.tool_name, result.result,
+                scheduling=result.scheduling,
+            )
         except Exception as e:
             self.logger.error(
                 "[Orchestrator] Failed to forward tool result",
