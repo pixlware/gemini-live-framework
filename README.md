@@ -249,7 +249,6 @@ class MyTools(BaseToolHandler):
     @tool(
         blocking=False,
         scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
-        interim_message="repeat this sentence: 'Looking that up, one moment...'",
     )
     async def search_knowledge(self, query: str) -> dict:
         """Non-blocking (asynchronous) — runs in the background while the
@@ -262,6 +261,34 @@ class MyTools(BaseToolHandler):
         ...
 
 
+# Non-blocking tool declarations MUST include "behavior": "NON_BLOCKING"
+# so the Gemini backend treats the call as asynchronous.
+declarations = [
+    {
+        "name": "get_weather",
+        "description": "Get current weather for a city.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "city": {"type": "STRING", "description": "City name"},
+            },
+            "required": ["city"],
+        },
+    },
+    {
+        "name": "search_knowledge",
+        "description": "Search the knowledge base.",
+        "behavior": "NON_BLOCKING",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "query": {"type": "STRING", "description": "Search query"},
+            },
+            "required": ["query"],
+        },
+    },
+]
+
 orchestrator = Orchestrator(
     transport=transport,
     gemini_session=session,
@@ -271,8 +298,9 @@ orchestrator = Orchestrator(
 
 **Asynchronous (non-blocking) tools** — With `blocking=False` the tool runs as a background task while the model keeps listening and speaking. The flow follows [Google's asynchronous function calling guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/live-api/asynchronous-function-calling):
 
-1. On dispatch, `interim_message` (if set) is sent to the model **verbatim as client text**. Phrase it as a prompt — e.g. `"repeat this sentence: 'I'm booking your ticket now, please wait.'"` — so the model speaks it while the tool runs. The function call ID stays unanswered.
-2. On completion, the real result is sent as a `FunctionResponse` with the original call ID and the tool's `scheduling` policy:
+1. The tool declaration **must** include `"behavior": "NON_BLOCKING"`. Without it, the Gemini backend treats the call as blocking regardless of the Python-side `@tool(blocking=False)` decorator.
+2. With `NON_BLOCKING` behavior, Gemini natively streams verbal acknowledgment (filler speech) while the tool executes — no client-side text injection needed. Guide the model persona via `SystemInstruction` to acknowledge lookups naturally (e.g. *"When invoking long-running tools, give a brief natural verbal acknowledgment."*).
+3. On completion, the real result is sent as a `FunctionResponse` with the original call ID and the tool's `scheduling` policy:
    - `WHEN_IDLE` (default) — the model announces the result at the next natural pause, without interrupting the user.
    - `SILENT` — the result is added to context only; the model mentions it when relevant or asked.
    - `INTERRUPT` — the model announces the result immediately, interrupting any ongoing interaction. Reserve for critical alerts.

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.1 (2026-08-14)
+
+### Fixed
+- Non-blocking tools no longer enter the turn-level batch queue (`_current_turn_tool_ids` / `_batch_tool_ids`). Only blocking tools are batched, so deferred non-blocking `FunctionResponse`s are sent as soon as they finish instead of getting stuck waiting for a flush that never comes.
+
+### Changed
+- Non-blocking tools rely on Gemini's native acknowledgment when the declaration includes `"behavior": "NON_BLOCKING"`. Guide filler speech via `SystemInstruction` instead of client-side text injection.
+- `ToolHandlerResult` no longer carries an `action` field; every result is forwarded as a `FunctionResponse`.
+
+### Removed
+- `ToolResponseAction` enum (including `SEND_INTERIM` / `SEND_RESPONSE`) and the orchestrator branch that called `send_text()` for interim filler.
+- `interim_message` from `@tool` / `ToolConfig` / `ToolHandlerResult`.
+
 ## 0.5.0 (2026-08-06)
 
 ### Changed
