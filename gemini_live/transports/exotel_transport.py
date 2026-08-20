@@ -18,7 +18,14 @@ class ExotelTransport(BaseTransport):
         if "text" not in message or not message["text"]:
             return
 
-        payload = json.loads(message["text"])
+        try:
+            payload = json.loads(message["text"])
+            if not isinstance(payload, dict):
+                return
+        except (json.JSONDecodeError, TypeError) as e:
+            self.logger.warning("[ExotelTransport] Malformed JSON text frame", error=str(e))
+            return
+
         event = payload.get("event")
 
         if event == "connected":
@@ -26,7 +33,7 @@ class ExotelTransport(BaseTransport):
 
         elif event == "start":
             start_data = payload.get("start", {})
-            self.stream_sid = start_data.get("stream_sid")
+            self.stream_sid = start_data.get("stream_sid") or payload.get("stream_sid")
             self.logger.info(f"[ExotelTransport] Stream started: {self.stream_sid}")
             yield EventData(event="start", data=start_data)
 
