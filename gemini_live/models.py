@@ -63,7 +63,14 @@ class TranscriptEntry(BaseModel):
 
 class UsageMetadataData(Data):
     prompt_token_count: int = 0
+    prompt_text_token_count: int = 0
+    prompt_audio_token_count: int = 0
+    prompt_video_token_count: int = 0
     response_token_count: int = 0
+    response_text_token_count: int = 0
+    response_audio_token_count: int = 0
+    response_video_token_count: int = 0
     total_token_count: int = 0
     thoughts_token_count: int = 0
     tool_use_prompt_token_count: int = 0
+    cached_content_token_count: int = 0

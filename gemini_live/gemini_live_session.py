@@ -328,20 +328,50 @@ class GeminiLiveSession:
         )
 
     def _parse_usage_metadata(self, usage: types.UsageMetadata) -> Iterable[GeminiLiveResponse]:
+        prompt_text_token_count = 0
+        prompt_audio_token_count = 0
+        prompt_video_token_count = 0
+
+        for prompt_token in usage.prompt_tokens_details or []:
+            if prompt_token.modality == "TEXT":
+                prompt_text_token_count += prompt_token.token_count
+            elif prompt_token.modality == "AUDIO":
+                prompt_audio_token_count += prompt_token.token_count
+            elif prompt_token.modality == "VIDEO":
+                prompt_video_token_count += prompt_token.token_count
+
+        response_text_token_count = 0
+        response_audio_token_count = 0
+        response_video_token_count = 0
+
+        for response_token in usage.response_tokens_details or []:
+            if response_token.modality == "TEXT":
+                response_text_token_count += response_token.token_count
+            elif response_token.modality == "AUDIO":
+                response_audio_token_count += response_token.token_count
+            elif response_token.modality == "VIDEO":
+                response_video_token_count += response_token.token_count
+
         data = UsageMetadataData(
             prompt_token_count=usage.prompt_token_count or 0,
+            prompt_text_token_count=prompt_text_token_count,
+            prompt_audio_token_count=prompt_audio_token_count,
+            prompt_video_token_count=prompt_video_token_count,
+
             response_token_count=usage.response_token_count or 0,
+            response_text_token_count=response_text_token_count,
+            response_audio_token_count=response_audio_token_count,
+            response_video_token_count=response_video_token_count,
+
             total_token_count=usage.total_token_count or 0,
+
             thoughts_token_count=usage.thoughts_token_count or 0,
             tool_use_prompt_token_count=usage.tool_use_prompt_token_count or 0,
+            cached_content_token_count=usage.cached_content_token_count or 0,
         )
         self.logger.info(
             "[GeminiSession] Usage metadata received",
-            prompt_tokens=data.prompt_token_count,
-            response_tokens=data.response_token_count,
-            total_tokens=data.total_token_count,
-            thoughts_tokens=data.thoughts_token_count,
-            tool_use_tokens=data.tool_use_prompt_token_count,
+            data=data.model_dump()
         )
         yield GeminiLiveResponse(
             type=GeminiLiveResponseType.USAGE_METADATA,

@@ -96,10 +96,19 @@ class MetricTracker:
 
     def on_usage_metadata(self, data: UsageMetadataData) -> None:
         self.total_usage.prompt_token_count += data.prompt_token_count
+        self.total_usage.prompt_text_token_count += data.prompt_text_token_count
+        self.total_usage.prompt_audio_token_count += data.prompt_audio_token_count
+        self.total_usage.prompt_video_token_count += data.prompt_video_token_count
+
         self.total_usage.response_token_count += data.response_token_count
+        self.total_usage.response_text_token_count += data.response_text_token_count
+        self.total_usage.response_audio_token_count += data.response_audio_token_count
+        self.total_usage.response_video_token_count += data.response_video_token_count
+
         self.total_usage.total_token_count += data.total_token_count
         self.total_usage.thoughts_token_count += data.thoughts_token_count
         self.total_usage.tool_use_prompt_token_count += data.tool_use_prompt_token_count
+        self.total_usage.cached_content_token_count += data.cached_content_token_count
 
     def to_dict(self) -> dict:
         return {
