@@ -312,9 +312,11 @@ class GeminiLiveSession:
         )
 
     def _parse_voice_activity(self, va: types.VoiceActivity) -> Iterable[GeminiLiveResponse]:
-        if not va.voice_activity_type:
-            return
-        if va.voice_activity_type == types.VoiceActivityType.TYPE_UNSPECIFIED:
+        if (
+            self.vad_type != "gemini"
+            or not va.voice_activity_type
+            or va.voice_activity_type == types.VoiceActivityType.TYPE_UNSPECIFIED
+        ):
             return
         yield GeminiLiveResponse(
             type=GeminiLiveResponseType.VOICE_ACTIVITY,
