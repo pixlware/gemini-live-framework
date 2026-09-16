@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.2 (2026-09-16)
+
+### Added
+- `TwilioTransport` for Twilio Media Streams over WebSocket, supporting μ-law 8 kHz audio streaming, interruption handling (`clear` events), and stream event forwarding.
+- Modality-specific token breakdown (`prompt_text_token_count`, `prompt_audio_token_count`, `prompt_video_token_count`, `response_text_token_count`, `response_audio_token_count`, `response_video_token_count`) and `cached_content_token_count` on `UsageMetadataData`.
+- Tracking and export of modality token breakdowns and cached content tokens in `MetricTracker.total_usage` and `MetricTracker.to_dict()`.
+
+### Fixed
+- Added error handling in `ExotelTransport` for malformed JSON text frames and top-level `stream_sid` extraction fallback on `start` events.
+- Suppressed server-side `VoiceActivity` events in `GeminiLiveSession` when client-side VAD (e.g. Silero) is active (`vad_type != "gemini"`), preventing duplicate voice activity signals.
+
 ## 0.5.1 (2026-08-14)
 
 ### Fixed

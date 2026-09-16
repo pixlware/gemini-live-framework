@@ -40,6 +40,7 @@ The `Orchestrator` runs three concurrent pipelines around a single Gemini Live s
 
 - **Web voice agents** over a FastAPI WebSocket (binary audio + JSON events).
 - **Phone voice agents** over the Exotel Voicebot Applet protocol.
+- **Phone voice agents** over Twilio Media Streams.
 - **Tool-driven agents** with blocking and non-blocking function calling, deduplication, and cancellation.
 - **Anything else** — wire a custom transport by subclassing `BaseTransport`.
 
@@ -101,7 +102,7 @@ Send 16 kHz PCM16 mono audio as binary WebSocket frames; receive 24 kHz PCM16 mo
 
 **Bidirectional audio streaming** — PCM16 and μ-law, with automatic transcoding and resampling between your client and Gemini.
 
-**Pluggable transports** — Ships with `FastapiTransport` (binary audio + JSON events over WebSocket) and `ExotelTransport` (Voicebot Applet protocol). Subclass `BaseTransport` for anything else.
+**Pluggable transports** — Ships with `FastapiTransport` (binary audio + JSON events over WebSocket), `ExotelTransport` (Voicebot Applet protocol), and `TwilioTransport` (Twilio Media Streams protocol). Subclass `BaseTransport` for anything else.
 
 ### Conversation control
 
